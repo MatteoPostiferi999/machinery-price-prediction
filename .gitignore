@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Environments
+.env
+venv/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data & outputs (keep folder, ignore contents)
+data/*
+!data/.gitkeep
+report/*.png
+report/*.jpg
+
+# IDE
+.vscode/settings.json
+.idea/

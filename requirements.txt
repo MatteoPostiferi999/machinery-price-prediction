@@ -1,0 +1,16 @@
+# ─── Core ─────────────────────────────────────────────────────────
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.3
+
+# ─── Visualization ────────────────────────────────────────────────
+matplotlib>=3.7
+seaborn>=0.13
+
+# ─── Model persistence ────────────────────────────────────────────
+joblib>=1.3
+
+# ─── Extras utili (non nel template base, ma quasi sempre servono) ─
+xgboost>=1.7          # boosting alternativo a GradientBoosting
+lightgbm>=4.0         # ancora più veloce di xgboost su dataset grandi
+scipy>=1.11           # distribuzioni, statistiche, sparse matrices
