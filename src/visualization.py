@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Optional
 
-from config import TARGET_COLUMN, REPORT_DIR
+from src.config import TARGET_COLUMN, REPORT_DIR
 
 # ─── style ────────────────────────────────────────────────────────
 sns.set_theme(style="whitegrid", font_scale=1.1)

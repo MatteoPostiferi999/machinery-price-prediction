@@ -2,27 +2,39 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
 *.egg-info/
-.eggs/
 dist/
 build/
 
-# Environments
-.env
-venv/
+# Virtual Environment
 .venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (optional - depends if you want to commit data)
+data/*.csv
+
+# Models (large files)
+models/*.pkl
+models/*.joblib
 
 # Jupyter
 .ipynb_checkpoints/
+*.ipynb
 
-# Data & outputs (keep folder, ignore contents)
-data/*
-!data/.gitkeep
-report/*.png
-report/*.jpg
-
-# IDE
-.vscode/settings.json
-.idea/
-
-exploration/
+# Logs
+*.log

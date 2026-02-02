@@ -18,7 +18,7 @@ from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.model_selection import RandomizedSearchCV
 from typing import Any
 
-from config import (
+from src.config import (
     HYPERPARAMS,
     PARAM_GRIDS,
     TUNING_CV_FOLDS,
