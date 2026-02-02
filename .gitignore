@@ -24,3 +24,5 @@ report/*.jpg
 # IDE
 .vscode/settings.json
 .idea/
+
+exploration/

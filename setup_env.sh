@@ -1,50 +1,41 @@
 #!/bin/bash
-# setup_env.sh
-# Creates (or reuses) a venv named "ML" in your home directory and installs dependencies.
-# Usage: bash setup_env.sh
+# setup_env.sh - Project-local version
 # ─────────────────────────────────────────────────────────────────────
 
 set -e
 
-VENV_NAME="ML"
-VENV_PATH="$HOME/$VENV_NAME"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"   # folder where this script is located
+# Usiamo .venv dentro la cartella del progetto
+VENV_NAME=".venv"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV_PATH="$SCRIPT_DIR/$VENV_NAME"
 REQUIREMENTS="$SCRIPT_DIR/requirements.txt"
 
-# ── 1. Create venv only if it doesn't exist ──────────────────────────
+# ── 1. Creazione ────────────────────────────────────────────────────
 if [ -d "$VENV_PATH" ]; then
-    echo "✓ Virtual environment '$VENV_NAME' already exists in $VENV_PATH"
+    echo "✓ Environment already exists in $VENV_PATH"
 else
-    echo "→ Creating virtual environment '$VENV_NAME' in $VENV_PATH ..."
+    echo "→ Creating local venv in $VENV_PATH ..."
     python3 -m venv "$VENV_PATH"
-    echo "✓ Environment created."
 fi
 
-# ── 2. Activate venv ───────────────────────────────────────────────
-echo "→ Activating environment ..."
-# shellcheck source=/dev/null
+# ── 2. Attivazione ──────────────────────────────────────────────────
+# Il comando 'source' è fondamentale per agire sulla shell corrente
 source "$VENV_PATH/bin/activate"
-echo "✓ Environment activated. (Python: $(which python3))"
 
-# ── 3. Upgrade pip ──────────────────────────────────────────────────
-echo "→ Upgrading pip ..."
+# ── 3. Aggiornamento e Installazione ────────────────────────────────
+echo "→ Updating pip and installing dependencies..."
 pip install --upgrade pip --quiet
 
-# ── 4. Install dependencies ─────────────────────────────────────────
 if [ -f "$REQUIREMENTS" ]; then
-    echo "→ Installing dependencies from requirements.txt ..."
     pip install -r "$REQUIREMENTS"
     echo "✓ Dependencies installed."
 else
-    echo "⚠  requirements.txt not found in $SCRIPT_DIR — skipping installation."
+    echo "⚠ requirements.txt not found, skipping install."
 fi
 
-# ── 5. Summary ──────────────────────────────────────────────────────
 echo ""
 echo "═══════════════════════════════════════════════"
-echo "  'ML' environment is ready."
-echo "  To activate it in the future, run:"
-echo "    source $VENV_PATH/bin/activate"
-echo "  To deactivate it:"
-echo "    deactivate"
+echo "  SETUP COMPLETE"
+echo "  The interpreter is now at: $VENV_PATH/bin/python"
+echo "  VS Code should auto-detect it now."
 echo "═══════════════════════════════════════════════"
