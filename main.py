@@ -12,6 +12,9 @@ from src.config import TRAIN_DATA, RANDOM_STATE
 from src.preprocessing import load_data, prepare_data
 from src.model import train_models
 from src.evaluation import ModelEvaluator
+import pandas as pd
+from deep_forensic import deep_forensic_analysis # Assicurati che il file sia nella stessa cartella o src
+
 
 
 def main():
@@ -74,7 +77,7 @@ def main():
     evaluator.residual_summary(best_model, data['X_val'], data['y_val_orig'])
 
     # 4c — Worst predictions: inspect the biggest errors
-    evaluator.worst_predictions(best_model, data['X_val'], data['y_val_orig'], n=10)
+    evaluator.worst_predictions(best_model, data['X_val'], data['y_val_orig'], n=20)
 
     # 4d — Persist validation results
     evaluator.save_results(val_comparison, filename="val_evaluation.csv")
@@ -86,6 +89,38 @@ def main():
     test_comparison = evaluator.compare_all(models, data['X_test'], data['y_test_orig'])
     evaluator.save_results(test_comparison, filename="test_evaluation.csv")
 
+    # PROVAAAAAAAAAAAAAAAAA
+    # ── STEP 6: Forensic Analysis ─────────────────────────────────
+    print("\n[STEP 6] FORENSIC ANALYSIS")
+    print("-" * 80)
+    
+    
+    #best_name, _ = manager.get_best_model()  
+    best_model = manager.models[best_name]
+    # Passiamo 'df' che è il dataset originale caricato allo Step 1
+    # Nota: 'df' deve essere ancora disponibile in memoria nel main
+    manager.analyze_worst_errors(
+        model=best_model, 
+        X_val=data['X_val'], 
+        y_val_orig=data['y_val_orig'],
+        df_raw=df,  # <--- ECCO IL TRUCCO: Passiamo il dataset originale
+        top_n=200
+    )
+
+    # ── STEP 7: Deep Forensic (Opzionale) ─────────────────────────
+        # Carichiamo i moduli necessari
+        
+        # Carica gli ID dei cattivi dal file appena creato
+    try:
+        worst_df_loaded = pd.read_csv("reports/worst_errors_forensic.csv")
+        worst_ids_list = worst_df_loaded['Sales ID'].tolist()
+            
+            # Lancia l'analisi comparativa
+        deep_forensic_analysis(df, worst_ids_list)
+            
+    except FileNotFoundError:
+            print("⚠️ File worst_errors_forensic.csv non trovato. Salta questo step.")
+            
     # ── FINAL SUMMARY ─────────────────────────────────────────────
     print("\n" + "=" * 80)
     print("✅ PIPELINE COMPLETE!")

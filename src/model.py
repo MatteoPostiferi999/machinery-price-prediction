@@ -121,7 +121,7 @@ def train_lightgbm(
         eval_metric='rmse',
         callbacks=[
             lgb.early_stopping(stopping_rounds=50, verbose=False),
-            lgb.log_evaluation(period=0)  # Silent training
+            lgb.log_evaluation(period=100)  # Silent training
         ]
     )
     
@@ -152,6 +152,69 @@ class ModelManager:
         # Import evaluation functions here to avoid circular imports
         from .evaluation import evaluate_model
         self.evaluate_model = evaluate_model
+
+
+        
+    def analyze_worst_errors(self, model, X_val, y_val_orig, df_raw, top_n=200):
+        """
+        Trova i peggiori errori e recupera i dati originali (incluso SalesID).
+        
+        Args:
+            model: Il modello allenato
+            X_val: Le feature processate della validazione
+            y_val_orig: I target originali
+            df_raw: Il DataFrame COMPLETAMENTE GREZZO (caricato all'inizio)
+        """
+        print(f"\n🕵️‍♂️ AVVIO ANALISI FORENSE SUI PEGGIORI {top_n} ERRORI")
+        print("="*80)
+        
+        # 1. Calcola Errori
+        # Nota: X_analysis mantiene l'indice originale di pandas!
+        X_analysis = X_val.copy()
+        y_pred = np.expm1(model.predict(X_val))
+        y_true = y_val_orig.values
+        
+        X_analysis['True_Price'] = y_true
+        X_analysis['Pred_Price'] = y_pred
+        X_analysis['Error_Abs'] = np.abs(y_true - y_pred)
+        
+        # 2. Trova gli Indici dei Peggiori
+        worst_processed = X_analysis.nlargest(top_n, 'Error_Abs')
+        
+        # QUI AVVIENE LA MAGIA: Usiamo l'indice per recuperare le righe dal raw
+        # .loc[indices] pesca le righe corrispondenti nel file originale
+        worst_indices = worst_processed.index
+        
+        # Selezioniamo dal raw solo le colonne che ci interessano per l'indagine
+        # (Aggiungi qui altre colonne se vuoi vederle, es. 'UsageBand')
+        cols_to_inspect = ['Sales ID', 'MachineID', 'ModelID', 'datasource', 
+                        'Year Made', 'Product Group', 'Product Class Description',
+                        'UsageBand', 'fiModelDesc', 'fiBaseModel']
+        
+        # Verifica che le colonne esistano nel raw (per sicurezza)
+        cols_existing = [c for c in cols_to_inspect if c in df_raw.columns]
+        
+        # Estraiamo i dati grezzi
+        forensic_data = df_raw.loc[worst_indices, cols_existing].copy()
+        
+        # Aggiungiamo le info sull'errore per comodità
+        forensic_data['True_Price'] = worst_processed['True_Price']
+        forensic_data['Pred_Price'] = worst_processed['Pred_Price']
+        forensic_data['Error_Abs'] = worst_processed['Error_Abs']
+        
+        # 3. Salvataggio Report
+        print(f"Recuperati ID originali per {len(forensic_data)} righe.")
+        
+        # Mostra i primi 5 a video
+        print("\n[ANTEPRIMA DATASET FORENSE CON ID]")
+        print(forensic_data[['Sales ID', 'True_Price', 'Pred_Price']].head().to_string(index=False))
+        
+        save_path = "reports/worst_errors_forensic.csv"
+        forensic_data.to_csv(save_path, index=False)
+        print(f"\n💾 Report completo salvato in: {save_path}")
+        print("   (Apri questo file in Excel per leggere le descrizioni complete!)")
+        
+        return forensic_data
     
     def train_all_models(
         self,

@@ -91,14 +91,14 @@ GROUP_IMPUTE_FEATURES = [
 # PREPROCESSING PARAMETERS
 # ============================================================================
 # Outlier capping (based on EDA)
-PRICE_LOWER_BOUND = 6100   # 1st percentile
-PRICE_UPPER_BOUND = 107500  # 99th percentile
+PRICE_LOWER_BOUND = 6100
+PRICE_UPPER_BOUND = 107500
 
 # Year Made filtering
 MIN_YEAR = 1950  # Filter out data errors (years like 1000)
 
 # Missing value thresholds
-DROP_MISSING_THRESHOLD = 0.75  # Drop columns with >80% missing
+DROP_MISSING_THRESHOLD = 0.80  # Drop columns with >80% missing
 
 # Scaling (disabled: LightGBM is tree-based, doesn't benefit from scaling)
 APPLY_SCALING = False
@@ -161,7 +161,7 @@ MODELS = {
         'params': {
             'n_estimators': 500,
             'learning_rate': 0.05,
-            'num_leaves': 31,
+            'num_leaves': 256,
             'max_depth': 10,
             'min_child_samples': 20,
             'subsample': 0.8,
