@@ -163,6 +163,9 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     
     # ── 1. Data Quality: Fix unrealistic years ───────────────────
     print(f"[engineer_features] Fixing Year Made < {MIN_YEAR}...")
+
+    df['Is_Year_Placeholder'] = (df['Year Made'] == 1000).astype(int)
+    
     before = (df['Year Made'] < MIN_YEAR).sum()
     df.loc[df['Year Made'] < MIN_YEAR, 'Year Made'] = np.nan
     print(f"[engineer_features] Set {before:,} unrealistic years to NaN")
@@ -185,6 +188,8 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df['Sale_Year'] = df['Sale_Date'].dt.year
     df['Sale_Month'] = df['Sale_Date'].dt.month
     df['Sale_Quarter'] = df['Sale_Date'].dt.quarter
+    #df['Is_Steel_TEX'] = ((df['Product Group'] == 'TEX') & (df['Tupper Type'] == 'Steel')).astype(int)
+    #df['Is_Rubber_TEX'] = ((df['Product Group'] == 'TEX') & (df['Tupper Type'] == 'Rubber')).astype(int)
     
     # ── 4. Derived Features ───────────────────────────────────────
     print("[engineer_features] Creating derived features...")

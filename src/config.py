@@ -132,7 +132,6 @@ ONEHOT_FEATURES = [
     'Transmission',
     'Ripper',
     'Coupler',
-    'Tupper Type',
     'Thumb',
     'Pattern Changer',
     'Grouser Type',
@@ -159,15 +158,15 @@ MODELS = {
         'name': 'LightGBM',
         'description': 'Gradient boosting optimized for large datasets (110MB)',
         'params': {
-            'n_estimators': 500,
-            'learning_rate': 0.05,
+            'n_estimators': 20000,
+            'learning_rate': 0.01,
             'num_leaves': 256,
-            'max_depth': 10,
-            'min_child_samples': 20,
+            'max_depth': 12,
+            'min_child_samples': 40,
             'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'reg_alpha': 0.1,   # L1 regularization
-            'reg_lambda': 0.1,  # L2 regularization
+            'colsample_bytree': 0.6,
+            'reg_alpha': 1.5,   # L1 regularization
+            'reg_lambda': 1.0,  # L2 regularization
             'n_jobs': -1,
             'random_state': RANDOM_STATE,
             'verbose': -1

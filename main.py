@@ -132,13 +132,22 @@ def main():
     print(f"   ✅ Best model saved to models/")
     print(f"   ✅ Evaluation results saved to reports/")
 
-    # Pull test metrics for best model from the comparison table
-    best_row = test_comparison[test_comparison['Model'] == best_name].iloc[0]
-    print(f"\n🏆 Best Model: {best_name.upper()} (test set)")
-    print(f"   R²:   {best_row['R2']:.4f}")
-    print(f"   MAE:  ${best_row['MAE']:,.0f}")
-    print(f"   RMSE: ${best_row['RMSE']:,.0f}")
-    print(f"   MAPE: {best_row['MAPE']:.2f}%")
+    # Pull test metrics for best model
+    best_test_row = test_comparison[test_comparison['Model'] == best_name].iloc[0]
+
+    # Pull validation metrics for best model
+    best_val_row = val_comparison[val_comparison['Model'] == best_name].iloc[0]
+
+    print(f"\n🏆 Best Model: {best_name.upper()}")
+
+    print("\n📊 PERFORMANCE COMPARISON")
+    print("-" * 80)
+    print(f"{'Metric':<10} | {'VALIDATION':>15} | {'TEST':>15}")
+    print("-" * 80)
+    print(f"{'R²':<10} | {best_val_row['R2']:>15.4f} | {best_test_row['R2']:>15.4f}")
+    print(f"{'MAE':<10} | ${best_val_row['MAE']:>14,.0f} | ${best_test_row['MAE']:>14,.0f}")
+    print(f"{'RMSE':<10} | ${best_val_row['RMSE']:>14,.0f} | ${best_test_row['RMSE']:>14,.0f}")
+    print(f"{'MAPE':<10} | {best_val_row['MAPE']:>14.2f}% | {best_test_row['MAPE']:>14.2f}%")
 
     print("\n📁 Next Steps:")
     print("   1. Generate visualizations (visualization.py)")

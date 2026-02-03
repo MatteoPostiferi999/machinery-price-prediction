@@ -120,8 +120,8 @@ def train_lightgbm(
         eval_set=[(X_val, y_val)],
         eval_metric='rmse',
         callbacks=[
-            lgb.early_stopping(stopping_rounds=50, verbose=False),
-            lgb.log_evaluation(period=100)  # Silent training
+            lgb.early_stopping(stopping_rounds=150, verbose=True),
+            lgb.log_evaluation(period=500)  # Silent training
         ]
     )
     
