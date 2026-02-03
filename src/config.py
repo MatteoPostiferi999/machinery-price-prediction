@@ -156,21 +156,29 @@ MODELS = {
     },
     'lightgbm': {
         'name': 'LightGBM',
-        'description': 'Gradient boosting optimized for large datasets (110MB)',
+        'description': 'Gradient Boosting optimized with Optuna (RMSE: 0.1999)',
         'params': {
-            'n_estimators': 200,
-            'learning_rate': 0.01,
-            'num_leaves': 256,
-            'max_depth': 12,
-            'min_child_samples': 40,
-            'subsample': 0.8,
-            'colsample_bytree': 0.6,
-            'reg_alpha': 1.5,   # L1 regularization
-            'reg_lambda': 1.0,  # L2 regularization
-            'n_jobs': -1,
+            # --- System Parameters (Fixed) ---
+            'n_estimators': 20000,       # High cap; Early Stopping determines actual duration
+            'objective': 'regression',   # Required for continuous price prediction
+            'metric': 'rmse',            # Optimization metric
+            'n_jobs': -1,                # Utilize all available CPU cores
             'random_state': RANDOM_STATE,
-            'verbose': -1
+            'verbose': -1,
+
+            # --- Optimized Hyperparameters (Tuned via Optuna) ---
+            'learning_rate': 0.0927,     # Aggressive rate for faster convergence (vs 0.01)
+            'num_leaves': 137,           # Model complexity (Optuna preferred 137 over 256)
+            'max_depth': 15,             # Allows deep trees to capture complex interactions
+            'min_child_samples': 20,     # Lower threshold to capture local data patterns
+            
+            # --- Regularization (Prevent Overfitting) ---
+            'subsample': 0.779,          # Train on ~78% of data rows per iteration (Stochastic)
+            'colsample_bytree': 0.943,   # Train on ~94% of features per iteration
+            'reg_alpha': 0.482,          # L1 Regularization (Sparse feature selection)
+            'reg_lambda': 2.29e-06,      # L2 Regularization (Very low -> Model trusts the data signal)
         }
+    
     }
 }
 

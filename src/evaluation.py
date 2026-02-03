@@ -1,73 +1,69 @@
 """
 evaluation.py
 =============
-Single source of truth for model evaluation.
+Single source of truth for model evaluation metrics and reporting.
 
-Handles the full evaluation flow:
-  1. Predict on a dataset (log scale)
-  2. Inverse-transform predictions back to original dollar scale
-  3. Calculate MAE, RMSE, R², MAPE
-  4. Compare multiple models side-by-side
-  5. Residual + error analysis utilities
+This module consolidates all metric calculations to ensure consistency across
+validation and test phases. It handles:
+  1. Inverse-transformation of log-predictions (Log -> Dollars)
+  2. Calculation of regression metrics (MAE, RMSE, R², MAPE)
+  3. Comparative reporting across multiple models
+  4. Deep-dive error analysis (residuals by price bucket, worst outliers)
 
-Usage in main.py:
-    from src.evaluation import ModelEvaluator
-
-    evaluator = ModelEvaluator(feature_names=data['X_val'].columns.tolist())
-
-    # Single model on validation
-    val_results = evaluator.evaluate(best_model, data['X_val'], data['y_val_orig'])
-
-    # All models on test (final report)
-    test_comparison = evaluator.compare_all(manager.models, data['X_test'], data['y_test_orig'])
+Design Pattern:
+    The 'ModelEvaluator' class acts as a facade, abstracting away the raw
+    math and string formatting required for professional reporting.
 """
 
 import numpy as np
 import pandas as pd
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Any
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from .config import REPORTS_DIR
 
 
 # ============================================================================
-# CORE METRIC FUNCTIONS  (vectorized, no loops)
+# CORE METRIC FUNCTIONS (Vectorized)
 # ============================================================================
 
 def _mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """
-    Mean Absolute Percentage Error.
+    Mean Absolute Percentage Error (MAPE).
 
-    Measures average relative error as a percentage.
-    Undefined when y_true contains zeros — those rows are excluded.
+    Robust calculation that automatically handles division-by-zero
+    by excluding rows where y_true is 0.
 
     Args:
-        y_true: True values (original scale)
-        y_pred: Predicted values (original scale)
+        y_true: True values (original scale).
+        y_pred: Predicted values (original scale).
 
     Returns:
-        MAPE as a percentage (e.g. 12.3 means 12.3%)
+        MAPE as a percentage (e.g., 12.5 for 12.5%).
     """
-    mask = y_true != 0                          # exclude zeros vectorized
+    # Vectorized boolean mask for safe division
+    mask = y_true != 0
+    
+    if np.sum(mask) == 0:
+        return np.nan  # Edge case: all targets are zero
+        
     return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
 
 
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
     """
-    Calculate all regression metrics in one pass.
-
-    Keys are uppercase (MAE, RMSE, R2, MAPE) — consistent with
-    the rest of the pipeline (config.py, model.py, main.py).
+    Calculate standard regression metrics in a single pass.
 
     Args:
-        y_true: True values (original dollar scale)
-        y_pred: Predicted values (original dollar scale)
+        y_true: True values (original dollar scale).
+        y_pred: Predicted values (original dollar scale).
 
     Returns:
-        {'MAE': ..., 'RMSE': ..., 'R2': ..., 'MAPE': ...}
+        Dictionary with keys: MAE, RMSE, R2, MAPE.
     """
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
+    # Ensure numpy arrays for vectorized math
+    y_true = np.asarray(y_true, dtype=float).flatten()
+    y_pred = np.asarray(y_pred, dtype=float).flatten()
 
     return {
         'MAE':  mean_absolute_error(y_true, y_pred),
@@ -76,129 +72,115 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
         'MAPE': _mape(y_true, y_pred),
     }
 
+# Alias for backward compatibility if needed
 evaluate_model = compute_metrics
 
+
 # ============================================================================
-# MODEL EVALUATOR  (main class — use this everywhere)
+# MODEL EVALUATOR CLASS
 # ============================================================================
 
 class ModelEvaluator:
     """
-    Handles prediction, inverse transform, metric calculation, and reporting.
-
-    All public methods work on original dollar scale internally —
-    you never have to remember to call expm1 yourself.
-
-    Attributes:
-        feature_names: Column names from training, used for residual analysis.
+    Orchestrator for model assessment and reporting.
+    
+    Encapsulates the logic for transforming predictions back to the original
+    scale (expm1) and generating human-readable performance reports.
     """
 
-    def __init__(self, feature_names: Optional[list] = None):
+    def __init__(self, feature_names: Optional[List[str]] = None):
         """
         Args:
-            feature_names: List of feature column names (from X_train.columns).
-                           Used later for per-feature error analysis.
+            feature_names: List of column names (useful for future feature-specific error analysis).
         """
         self.feature_names = feature_names or []
 
-    # ── single-model evaluation ───────────────────────────────────────────
+    # ── Single Model Evaluation ───────────────────────────────────────────
 
     def evaluate(
         self,
-        model,
+        model: Any,
         X: pd.DataFrame,
         y_true_orig: pd.Series,
         label: str = "Model"
     ) -> Dict[str, float]:
         """
-        Predict → inverse-transform → compute metrics → print.
-
-        Args:
-            model:        Trained sklearn-compatible model (predicts log scale).
-            X:            Feature DataFrame (already preprocessed).
-            y_true_orig:  True prices in original dollar scale.
-            label:        Name shown in the printed summary.
-
-        Returns:
-            Metrics dict with keys MAE, RMSE, R2, MAPE.
+        Generate metrics for a single model.
+        
+        Handles the Log-transform inversion automatically.
         """
-        # predict in log scale, convert back to dollars
+        # 1. Predict (Log Scale)
         y_pred_log = model.predict(X)
-        y_pred     = np.expm1(y_pred_log)
+        
+        # 2. Inverse Transform (Log -> Real Dollars)
+        y_pred = np.expm1(y_pred_log)
 
+        # 3. Calculate Metrics
         metrics = compute_metrics(y_true_orig.values, y_pred)
 
         self._print_metrics(metrics, title=f"{label} — Evaluation Results")
-
         return metrics
 
-    # ── multi-model comparison ────────────────────────────────────────────
+    # ── Multi-Model Comparison ────────────────────────────────────────────
 
     def compare_all(
         self,
-        models: Dict[str, object],
+        models: Dict[str, Any],
         X: pd.DataFrame,
         y_true_orig: pd.Series
     ) -> pd.DataFrame:
         """
-        Evaluate every model in the dict and return a comparison table.
+        Run evaluation on multiple models and return a leaderboard.
 
         Args:
-            models:       {name: trained_model} — e.g. manager.models
-            X:            Feature DataFrame.
-            y_true_orig:  True prices in original dollar scale.
+            models: Dictionary of {name: trained_model_object}.
+            X: Test features.
+            y_true_orig: True target values (original scale).
 
         Returns:
-            DataFrame sorted by R² descending, one row per model.
+            DataFrame sorted by R² score (descending).
         """
         rows = []
         for name, model in models.items():
+            # Predict & Invert
             y_pred = np.expm1(model.predict(X))
-            m      = compute_metrics(y_true_orig.values, y_pred)
-            m['Model'] = name
-            rows.append(m)
+            
+            # Metric Calculation
+            metrics = compute_metrics(y_true_orig.values, y_pred)
+            metrics['Model'] = name
+            rows.append(metrics)
 
-        df = (
-            pd.DataFrame(rows)[['Model', 'MAE', 'RMSE', 'R2', 'MAPE']]
-            .sort_values('R2', ascending=False)
-            .reset_index(drop=True)
-        )
+        # Create Leaderboard
+        df = pd.DataFrame(rows)
+        cols = ['Model', 'MAE', 'RMSE', 'R2', 'MAPE']
+        df = df[cols].sort_values('R2', ascending=False).reset_index(drop=True)
 
-        # pretty-print
+        # Console Report
         print("\n" + "=" * 65)
-        print(" MODEL COMPARISON")
+        print(" MODEL COMPARISON LEADERBOARD")
         print("=" * 65)
         print(df.to_string(index=False, float_format=lambda x: f"{x:,.2f}"))
         print("=" * 65 + "\n")
 
         return df
 
-    # ── residual analysis ─────────────────────────────────────────────────
+    # ── Deep Dive: Residual Analysis ──────────────────────────────────────
 
     def residual_summary(
         self,
-        model,
+        model: Any,
         X: pd.DataFrame,
         y_true_orig: pd.Series
     ) -> pd.DataFrame:
         """
-        Compute residuals and return a summary by price bucket.
-
-        Buckets prices into quintiles so you can see where the model
-        struggles (e.g. cheap machines vs expensive ones).
-
-        Args:
-            model:        Trained model.
-            X:            Feature DataFrame.
-            y_true_orig:  True prices in original dollar scale.
-
-        Returns:
-            DataFrame with columns: Price Range, Count, MAE, RMSE, R², MAPE
+        Analyze errors across different price ranges (quintiles).
+        
+        This reveals if the model is biased (e.g., underpredicting expensive machines).
         """
         y_true = y_true_orig.values.astype(float)
         y_pred = np.expm1(model.predict(X))
 
-        # vectorized quintile labeling
+        # Create 5 buckets (Quintiles) based on True Price
         labels  = ['Very Low', 'Low', 'Medium', 'High', 'Very High']
         buckets = pd.qcut(y_true, q=5, labels=labels, duplicates='drop')
 
@@ -207,50 +189,44 @@ class ModelEvaluator:
             mask = (buckets == label)
             if mask.sum() == 0:
                 continue
+            
+            # Calculate metrics for this specific bucket
             m = compute_metrics(y_true[mask], y_pred[mask])
             m['Price Range'] = label
-            m['Count']       = int(mask.sum())
+            m['Count'] = int(mask.sum())
             rows.append(m)
 
         df = pd.DataFrame(rows)[['Price Range', 'Count', 'MAE', 'RMSE', 'R2', 'MAPE']]
 
         print("\n" + "=" * 65)
-        print(" RESIDUAL ANALYSIS — BY PRICE BUCKET")
+        print(" RESIDUAL ANALYSIS — BY PRICE SEGMENT")
         print("=" * 65)
         print(df.to_string(index=False, float_format=lambda x: f"{x:,.2f}"))
         print("=" * 65 + "\n")
 
         return df
 
-    # ── worst predictions ─────────────────────────────────────────────────
+    # ── Deep Dive: Outlier Detection ──────────────────────────────────────
 
     def worst_predictions(
         self,
-        model,
+        model: Any,
         X: pd.DataFrame,
         y_true_orig: pd.Series,
         n: int = 10
     ) -> pd.DataFrame:
         """
-        Return the N predictions with the largest absolute error.
-
-        Useful for manual inspection during error analysis.
-
-        Args:
-            model:        Trained model.
-            X:            Feature DataFrame.
-            y_true_orig:  True prices in original dollar scale.
-            n:            How many worst predictions to show.
-
-        Returns:
-            DataFrame sorted by Error descending.
+        Identify the N most erroneous predictions.
+        Useful for debugging specific edge cases.
         """
-        y_true     = y_true_orig.values.astype(float)
-        y_pred     = np.expm1(model.predict(X))
+        y_true = y_true_orig.values.astype(float)
+        y_pred = np.expm1(model.predict(X))
+        
         abs_errors = np.abs(y_true - y_pred)
 
-        # vectorized top-n selection (no sorting the full array)
+        # Optimized Top-N selection (Argpartition is O(n), faster than Sort O(n log n))
         top_idx = np.argpartition(abs_errors, -n)[-n:]
+        # Sort just the top N for display
         top_idx = top_idx[np.argsort(abs_errors[top_idx])[::-1]]
 
         df = pd.DataFrame({
@@ -261,36 +237,31 @@ class ModelEvaluator:
         }).round(2)
 
         print("\n" + "=" * 65)
-        print(f" TOP {n} WORST PREDICTIONS")
+        print(f" TOP {n} WORST PREDICTIONS (OUTLIERS)")
         print("=" * 65)
         print(df.to_string(index=False))
         print("=" * 65 + "\n")
 
         return df
 
-    # ── save results ──────────────────────────────────────────────────────
+    # ── Persistence ───────────────────────────────────────────────────────
 
     def save_results(
         self,
         comparison_df: pd.DataFrame,
         filename: str = "evaluation_results.csv"
     ) -> None:
-        """
-        Persist the comparison table to reports/.
-
-        Args:
-            comparison_df: DataFrame from compare_all().
-            filename:      Output filename.
-        """
+        """Export evaluation results to CSV."""
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         path = REPORTS_DIR / filename
         comparison_df.to_csv(path, index=False)
-        print(f"[evaluation] Results saved to {path}")
+        print(f"[Evaluation] Results saved to {path}")
 
-    # ── internal ──────────────────────────────────────────────────────────
+    # ── Internal Helper ───────────────────────────────────────────────────
 
     @staticmethod
     def _print_metrics(metrics: Dict[str, float], title: str = "Evaluation") -> None:
-        """Pretty-print a single metrics dict."""
+        """Console printer for metric dictionaries."""
         print(f"\n{'=' * 50}")
         print(f"  {title}")
         print(f"{'=' * 50}")
