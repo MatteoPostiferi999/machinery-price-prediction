@@ -10,14 +10,15 @@ from pathlib import Path
 # ============================================================================
 # PATHS
 # ============================================================================
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 MODELS_DIR = PROJECT_ROOT / "models"
 REPORTS_DIR = PROJECT_ROOT / "reports"
 
-# Ensure directories exist
-MODELS_DIR.mkdir(exist_ok=True)
-REPORTS_DIR.mkdir(exist_ok=True)
+# Ensure directories exist immediately upon import
+# This fails early if permissions are wrong.
+for path in [MODELS_DIR, REPORTS_DIR]:
+    path.mkdir(parents=True, exist_ok=True)
 
 # Data files
 TRAIN_DATA = DATA_DIR / "train_full.csv"
@@ -38,7 +39,7 @@ TEST_SIZE = 0.15
 # FEATURE ENGINEERING
 # ============================================================================
 # Columns to drop (IDs, leakage, redundant, and low-signal features)
-DROP_FEATURES = [
+DROP_FEATURES = (
     # --- Leakage & Identifiers (no predictive value) ---
     'Unnamed: 0',              # Index = proxy for date (leakage)
     'Sales ID',                # Unique sale identifier
@@ -69,7 +70,7 @@ DROP_FEATURES = [
     'Travel Possibilities',
     'Differential Type',
     'Steering Controls',
-]
+)
 
 # Features to extract from Product Class Description
 EXTRACT_PATTERNS = {
@@ -79,12 +80,12 @@ EXTRACT_PATTERNS = {
 }
 
 # Features to impute per Product Group (group-aware imputation)
-GROUP_IMPUTE_FEATURES = [
+GROUP_IMPUTE_FEATURES = (
     'MachineHours CurrentMeter',
     'Horsepower',
     'Weight_Tons',
     'Year Made'
-]
+)
 
 # ============================================================================
 # PREPROCESSING PARAMETERS
@@ -106,7 +107,7 @@ APPLY_SCALING = False
 # ENCODING STRATEGY
 # ============================================================================
 # High cardinality features → Target Encoding
-TARGET_ENCODE_FEATURES = [
+TARGET_ENCODE_FEATURES = (
     'Model Description',
     'Base Model',
     'Secondary Description',
@@ -116,10 +117,10 @@ TARGET_ENCODE_FEATURES = [
     'Screen Size',
     'Screen Size.1',
     'Stick Length',
-]
+)
 
 # Low cardinality features → One-Hot Encoding
-ONEHOT_FEATURES = [
+ONEHOT_FEATURES = (
     'Usage Band',
     'Machine Size',
     'Product Group',
@@ -134,7 +135,7 @@ ONEHOT_FEATURES = [
     'Thumb',
     'Pattern Changer',
     'Grouser Type',
-]
+)
 
 # Threshold for rare label grouping (categories with < N occurrences → "Rare")
 RARE_LABEL_THRESHOLD = 10
@@ -200,6 +201,8 @@ METRIC_FORMATS = {
 # ============================================================================
 # VISUALIZATION SETTINGS
 # ============================================================================
-PLOT_DPI = 150
-PLOT_STYLE = 'seaborn-v0_8-whitegrid'
-COLOR_PALETTE = 'Set2'
+PLOT_SETTINGS = {
+    'DPI': 150,
+    'STYLE': 'whitegrid',
+    'PALETTE': 'Set2'
+}
