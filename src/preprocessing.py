@@ -9,18 +9,15 @@ Pipeline flow:
     2. Train/Val/Test split (70/15/15)
     3. Fit preprocessor on training set only
     4. Transform all splits using fitted transformers (no leakage)
-
-Encoding strategy:
-    - High-cardinality categoricals → Target Encoding (mapped to mean target per category)
-    - Low-cardinality categoricals  → Rare-label grouping + One-Hot Encoding
 """
 
 import pandas as pd
 import numpy as np
 import re
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Set, Union
 from sklearn.model_selection import train_test_split
+from sklearn.base import BaseEstimator, TransformerMixin
 
 from .config import (
     TARGET_COLUMN,
@@ -35,7 +32,6 @@ from .config import (
     PRICE_LOWER_BOUND,
     PRICE_UPPER_BOUND,
     MIN_YEAR,
-    DROP_MISSING_THRESHOLD,
     TARGET_ENCODE_FEATURES,
     ONEHOT_FEATURES,
     RARE_LABEL_THRESHOLD
@@ -48,33 +44,18 @@ from .config import (
 
 def sanitize_column_names(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Sanitize column names to be compatible with LightGBM.
-
-    LightGBM does not support special JSON characters: [ ] < > : " , { } .
-    This function replaces them with safe alternatives and resolves
-    any resulting duplicate column names by appending a numeric suffix.
-
-    Args:
-        df: DataFrame with potentially problematic column names
-
-    Returns:
-        DataFrame with sanitized column names
+    Sanitize column names for LightGBM compatibility.
+    Replaces special JSON characters with underscores and resolves duplicates.
     """
-    replacements = {
-        '[': '(', ']': ')', '<': 'lt', '>': 'gt',
-        ':': '_', '"': '', ',': '_', '{': '(', '}': ')', '.': '_'
-    }
-
-    new_columns = []
-    for col in df.columns:
-        new_col = col
-        for char, replacement in replacements.items():
-            new_col = new_col.replace(char, replacement)
-        new_columns.append(new_col)
-
-    # Resolve duplicates by appending _1, _2, ...
+    # Vectorized replacement map using regex
+    pattern = r'[\[\]<>"\'{},.:]'
+    
+    new_columns = df.columns.astype(str).str.replace(pattern, '_', regex=True)
+    
+    # Resolve duplicates efficiently
+    seen: Dict[str, int] = {}
     final_columns = []
-    seen = {}
+    
     for col in new_columns:
         if col in seen:
             seen[col] += 1
@@ -87,33 +68,19 @@ def sanitize_column_names(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ============================================================================
-# DATA LOADING
-# ============================================================================
-
 def load_data(filepath: Path) -> pd.DataFrame:
-    """
-    Load raw CSV data with proper dtype handling.
-
-    Args:
-        filepath: Path to CSV file
-
-    Returns:
-        Raw DataFrame
-    """
+    """Load raw CSV data with optimized types where possible."""
     print(f"[load_data] Loading data from {filepath}...")
+    
+    # Specific dtypes to prevent mixed-type warnings
+    dtype_map = {
+        'Model Series': 'object',
+        'Couple System': 'object',
+        'Grouser Tracks': 'object',
+        'Hydraulics Flow': 'object'
+    }
 
-    df = pd.read_csv(
-        filepath,
-        low_memory=False,
-        dtype={
-            'Model Series': str,
-            'Couple System': str,
-            'Grouser Tracks': str,
-            'Hydraulics Flow': str
-        }
-    )
-
+    df = pd.read_csv(filepath, low_memory=False, dtype=dtype_map)
     print(f"[load_data] Loaded {len(df):,} rows x {len(df.columns)} columns")
     return df
 
@@ -123,81 +90,42 @@ def load_data(filepath: Path) -> pd.DataFrame:
 # ============================================================================
 
 def extract_numeric_from_text(series: pd.Series, pattern: str) -> pd.Series:
-    """
-    Extract numeric values from text using a regex pattern.
-
-    Args:
-        series: Text column to extract from
-        pattern: Regex pattern with one capture group
-
-    Returns:
-        Series with extracted numeric values (NaN where pattern not found)
-    """
-    def _extract(text):
-        if pd.isna(text):
-            return np.nan
-        match = re.search(pattern, str(text))
-        return float(match.group(1)) if match else np.nan
-
-    return series.apply(_extract)
+    """Extract numeric values from text using a regex pattern (Vectorized)."""
+    return series.str.extract(pattern, expand=False).astype(float)
 
 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Apply all feature engineering transformations.
-
-    Steps:
-        1. Fix unrealistic Year Made values (data quality)
-        2. Extract technical specs from Product Class Description (text mining)
-        3. Create temporal features from Sales date
-        4. Create derived features (Machine_Age, Has_Hours)
-
-    Args:
-        df: Raw DataFrame
-
-    Returns:
-        DataFrame with engineered features
-    """
+    """Apply all feature engineering transformations."""
     df = df.copy()
     print("\n[engineer_features] Starting feature engineering...")
 
-    # ── 1. Data Quality: Fix unrealistic years ───────────────────
+    # 1. Data Quality: Fix unrealistic years
     print(f"[engineer_features] Fixing Year Made < {MIN_YEAR}...")
     df['Is_Year_Placeholder'] = (df['Year Made'] == 1000).astype(int)
+    
+    mask_year = df['Year Made'] < MIN_YEAR
+    print(f"[engineer_features]   -> Set {mask_year.sum():,} unrealistic years to NaN")
+    df.loc[mask_year, 'Year Made'] = np.nan
 
-    before = (df['Year Made'] < MIN_YEAR).sum()
-    df.loc[df['Year Made'] < MIN_YEAR, 'Year Made'] = np.nan
-    print(f"[engineer_features]   -> Set {before:,} unrealistic years to NaN")
-
-    # ── 2. Text Mining: Extract technical specs ──────────────────
+    # 2. Text Mining: Extract technical specs (Vectorized)
     print("[engineer_features] Extracting numeric features from Product Class Description...")
     for feature_name, pattern in EXTRACT_PATTERNS.items():
-        df[feature_name] = extract_numeric_from_text(
-            df['Product Class Description'],
-            pattern
-        )
-        non_null = df[feature_name].notna().sum()
-        pct = (non_null / len(df)) * 100
-        print(f"[engineer_features]   -> {feature_name}: {non_null:,} values ({pct:.1f}%)")
+        df[feature_name] = extract_numeric_from_text(df['Product Class Description'], pattern)
+        pct = (df[feature_name].notna().mean()) * 100
+        print(f"[engineer_features]   -> {feature_name}: {pct:.1f}% coverage")
 
-    # ── 3. Temporal Features ──────────────────────────────────────
+    # 3. Temporal Features
     print("[engineer_features] Creating temporal features...")
-    df['Sale_Date'] = pd.to_datetime(df['Sales date'], errors='coerce')
-    df['Sale_Year'] = df['Sale_Date'].dt.year
-    df['Sale_Month'] = df['Sale_Date'].dt.month
-    df['Sale_Quarter'] = df['Sale_Date'].dt.quarter
+    sale_date = pd.to_datetime(df['Sales date'], errors='coerce')
+    df['Sale_Date'] = sale_date
+    df['Sale_Year'] = sale_date.dt.year
+    df['Sale_Month'] = sale_date.dt.month
+    df['Sale_Quarter'] = sale_date.dt.quarter
 
-    # ── 4. Derived Features ───────────────────────────────────────
+    # 4. Derived Features
     print("[engineer_features] Creating derived features...")
-
-    # Machine Age: key predictor of depreciation
     df['Machine_Age'] = df['Sale_Year'] - df['Year Made']
-
-    # Has_Hours: binary indicator — machines with hour meter data
-    # tend to sell at a ~12.6% price premium (signal from EDA)
     df['Has_Hours'] = df['MachineHours CurrentMeter'].notna().astype(int)
-    has_hours_pct = (df['Has_Hours'] == 1).sum() / len(df) * 100
-    print(f"[engineer_features]   -> Has_Hours: {has_hours_pct:.1f}% have hour meter data")
 
     print("[engineer_features] Feature engineering complete!")
     return df
@@ -207,379 +135,249 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 # PREPROCESSING PIPELINE
 # ============================================================================
 
-class Preprocessor:
+class Preprocessor(BaseEstimator, TransformerMixin):
     """
     Handles all preprocessing transformations with proper train/test separation.
-    Follows scikit-learn fit/transform pattern to prevent data leakage.
-
-    State fitted on training data:
-        - group_medians: per-group median values for imputation
-        - target_encode_maps: category -> mean target price mappings
-        - rare_categories_map: categories below frequency threshold
-        - known_categories: set of categories seen during training
-        - onehot_columns: expected one-hot columns after get_dummies
+    Inherits from sklearn BaseEstimator/TransformerMixin for pipeline compatibility.
     """
 
     def __init__(self):
         self.group_medians: Dict[str, pd.Series] = {}
-        self.numeric_features: list = []
-        self.categorical_features: list = []
-        self._is_fitted = False
-
-        # Target encoding state
+        self.global_medians: Dict[str, float] = {}
+        self.numeric_features: List[str] = []
+        self.categorical_features: List[str] = []
+        
+        # Encoding state
         self.target_encode_maps: Dict[str, pd.Series] = {}
         self.global_target_mean: float = 0.0
+        self.known_categories: Dict[str, Set] = {}
+        self.rare_categories_map: Dict[str, Set] = {}
+        self.onehot_columns: List[str] = []
+        
+        # Consistency state (Fix for "Feature names must match" error)
+        self.final_columns: List[str] = None
+        self._is_fitted = False
 
-        # One-hot encoding state
-        self.known_categories: Dict[str, set] = {}
-        self.rare_categories_map: Dict[str, set] = {}
-        self.onehot_columns: list = []
-
-    def fit(self, df: pd.DataFrame) -> 'Preprocessor':
+    def fit(self, df: pd.DataFrame, y=None) -> 'Preprocessor':
         """
-        Fit preprocessing transformers on training data only.
-
-        Computes and stores:
-            - Feature type identification (numeric vs categorical)
-            - Group-aware medians for imputation
-            - Target encoding maps (category -> mean price)
-            - Rare category sets and expected one-hot columns
-
-        Args:
-            df: Training DataFrame (with engineered features)
-
-        Returns:
-            self (for method chaining)
+        Fit preprocessing transformers on training data.
         """
         print("\n[Preprocessor.fit] Fitting preprocessing transformers...")
         df = df.copy()
 
-        # ── Identify feature types ────────────────────────────────
+        # Identify feature types
         self._identify_feature_types(df)
 
-        # ── Group-aware imputation statistics ─────────────────────
-        print("[Preprocessor.fit] Calculating group-aware medians...")
-        for feature in GROUP_IMPUTE_FEATURES:
-            if feature in df.columns and 'Product Group' in df.columns:
-                self.group_medians[feature] = df.groupby('Product Group')[feature].median()
-                print(f"[Preprocessor.fit]   -> {feature}: medians per Product Group calculated")
+        # 1. Group-aware imputation (Vectorized GroupBy)
+        cols_to_impute = [f for f in GROUP_IMPUTE_FEATURES if f in df.columns]
+        if cols_to_impute and 'Product Group' in df.columns:
+            print("[Preprocessor.fit] Calculating group-aware medians...")
+            medians_df = df.groupby('Product Group')[cols_to_impute].median()
+            for col in cols_to_impute:
+                self.group_medians[col] = medians_df[col]
 
-        # ── Target encoding maps ──────────────────────────────────
+        # 2. Global Imputation Statistics (Tier 2 Fallback)
+        if self.numeric_features:
+            self.global_medians = df[self.numeric_features].median().to_dict()
+
+        # 3. Target encoding maps
         if TARGET_COLUMN in df.columns:
             self.global_target_mean = df[TARGET_COLUMN].mean()
-            print(f"[Preprocessor.fit] Global target mean: ${self.global_target_mean:,.0f}")
+            te_features = [f for f in TARGET_ENCODE_FEATURES if f in df.columns]
+            
+            print(f"[Preprocessor.fit] Target encoding {len(te_features)} features...")
+            for feature in te_features:
+                self.target_encode_maps[feature] = df.groupby(feature)[TARGET_COLUMN].mean()
 
-            te_features_present = [f for f in TARGET_ENCODE_FEATURES if f in df.columns]
-            if te_features_present:
-                print(f"[Preprocessor.fit] Calculating target encoding maps for {len(te_features_present)} features...")
-                for feature in te_features_present:
-                    self.target_encode_maps[feature] = df.groupby(feature)[TARGET_COLUMN].mean()
-                    print(f"[Preprocessor.fit]   -> {feature}: {len(self.target_encode_maps[feature])} categories mapped")
-
-        # ── Rare label detection + one-hot column alignment ───────
-        ohe_features_present = [f for f in ONEHOT_FEATURES if f in df.columns]
-        if ohe_features_present:
-            # Store known categories per feature (for unseen category handling at transform time)
-            for feature in ohe_features_present:
+        # 4. Rare label detection
+        ohe_features = [f for f in ONEHOT_FEATURES if f in df.columns]
+        if ohe_features:
+            print(f"[Preprocessor.fit] Detecting rare categories (Threshold={RARE_LABEL_THRESHOLD})...")
+            df_sim = df[ohe_features].copy()
+            for feature in ohe_features:
                 self.known_categories[feature] = set(df[feature].dropna().unique())
-
-            print(f"[Preprocessor.fit] Calculating rare categories for {len(ohe_features_present)} OHE features (threshold={RARE_LABEL_THRESHOLD})...")
-            for feature in ohe_features_present:
-                value_counts = df[feature].value_counts()
-                rare_cats = set(value_counts[value_counts < RARE_LABEL_THRESHOLD].index)
+                counts = df[feature].value_counts()
+                rare_cats = set(counts[counts < RARE_LABEL_THRESHOLD].index)
                 self.rare_categories_map[feature] = rare_cats
                 if rare_cats:
-                    print(f"[Preprocessor.fit]   -> {feature}: {len(rare_cats)} rare categories will become 'Other'")
+                    mask_rare = df_sim[feature].isin(rare_cats)
+                    df_sim.loc[mask_rare, feature] = 'Other'
 
-            # Simulate get_dummies on training data to capture expected columns
-            df_ohe = df[ohe_features_present].copy()
-            for feature in ohe_features_present:
-                rare_cats = self.rare_categories_map.get(feature, set())
-                if rare_cats:
-                    df_ohe[feature] = df_ohe[feature].apply(lambda x: 'Other' if x in rare_cats else x)
-            df_ohe = df_ohe.fillna('Unknown')
-            dummies = pd.get_dummies(df_ohe, columns=ohe_features_present, drop_first=True)
+            df_sim = df_sim.fillna('Unknown')
+            dummies = pd.get_dummies(df_sim, columns=ohe_features, drop_first=True)
             self.onehot_columns = dummies.columns.tolist()
-            print(f"[Preprocessor.fit]   -> Will create {len(self.onehot_columns)} one-hot encoded features")
+            print(f"[Preprocessor.fit]   -> Will create {len(self.onehot_columns)} OHE features")
 
         self._is_fitted = True
-        print("[Preprocessor.fit] Preprocessing transformers fitted successfully!")
         return self
 
     def transform(self, df: pd.DataFrame, is_train: bool = False) -> pd.DataFrame:
         """
-        Apply preprocessing transformations using fitted state.
-
-        Args:
-            df: DataFrame to transform (must have engineered features)
-            is_train: If True, applies target capping and log transformation
-
-        Returns:
-            Preprocessed DataFrame ready for modeling
+        Apply preprocessing using fitted state.
+        Ensures exact column order match between train and test.
         """
         if not self._is_fitted:
-            raise RuntimeError("Preprocessor must be fitted before transform. Call .fit() first.")
+            raise RuntimeError("Preprocessor must be fitted before transform.")
 
         print(f"\n[Preprocessor.transform] Transforming data (is_train={is_train})...")
         df = df.copy()
 
-        # ── 1. Target transformation (training set only) ─────────
+        # 1. Target transformation (Training only)
         if is_train and TARGET_COLUMN in df.columns:
-            print(f"[Preprocessor.transform] Capping {TARGET_COLUMN} outliers...")
             df[TARGET_COLUMN] = df[TARGET_COLUMN].clip(PRICE_LOWER_BOUND, PRICE_UPPER_BOUND)
-
-            print(f"[Preprocessor.transform] Applying log transformation to {TARGET_COLUMN}...")
             df[TARGET_LOG] = np.log1p(df[TARGET_COLUMN])
-            print(f"[Preprocessor.transform]   -> Skewness: {df[TARGET_COLUMN].skew():.2f} (raw) -> {df[TARGET_LOG].skew():.2f} (log)")
 
-        # ── 2. Imputation ─────────────────────────────────────────
-        df = self._impute_missing(df)
+        # 2. Imputation
+        self._apply_imputation(df)
 
-        # ── 3. Drop unwanted columns ──────────────────────────────
-        df = self._drop_columns(df)
+        # 3. Drop Columns
+        self._apply_column_drops(df)
 
-        # ── 4. Categorical encoding ───────────────────────────────
-        df = self._encode_categorical(df)
+        # 4. Categorical Encoding
+        df = self._apply_encoding(df)
 
-        # ── 5. Final safety checks ────────────────────────────────
-        # Drop any residual non-numeric columns (except target)
-        non_numeric = df.select_dtypes(exclude=[np.number]).columns
-        cols_to_drop = [c for c in non_numeric if c not in [TARGET_COLUMN, TARGET_LOG]]
-        if cols_to_drop:
-            df = df.drop(columns=cols_to_drop)
-            print(f"[Preprocessor.transform] Dropped {len(cols_to_drop)} residual non-numeric columns")
+        # 5. Cleanup & Column Alignment (CRITICAL FIX)
+        # Drop residual non-numerics (excluding target)
+        numerics = df.select_dtypes(include=[np.number]).columns
+        
+        # Keep targets only if present
+        targets = [c for c in [TARGET_COLUMN, TARGET_LOG] if c in df.columns]
+        
+        # If training, define the final feature structure
+        if is_train:
+            # Save the exact list of feature columns (excluding targets for consistency checks)
+            self.final_columns = [c for c in numerics if c not in [TARGET_COLUMN, TARGET_LOG]]
+            
+            # Combine features + targets for the output dataframe
+            final_selection = self.final_columns + targets
+            df = df[final_selection]
+            
+        else:
+            # If validation/test, FORCE the dataframe to match training columns exactly
+            if self.final_columns is None:
+                raise RuntimeError("Transform called on test data before train data defined final columns.")
+            
+            # Reindex ensures columns are in the exact same order as fit()
+            # Missing columns are filled with 0, extra columns are dropped.
+            features_df = df.reindex(columns=self.final_columns, fill_value=0)
+            
+            # Re-attach targets if they exist (for validation evaluation)
+            if targets:
+                df = pd.concat([features_df, df[targets]], axis=1)
+            else:
+                df = features_df
 
-        # Fill any remaining NaN with 0 (safety net after encoding)
+        # Final safety fill
         if df.isna().any().any():
-            nan_cols = df.columns[df.isna().any()].tolist()
-            print(f"[Preprocessor.transform] Filling remaining NaN in {len(nan_cols)} columns with 0")
             df = df.fillna(0)
 
-        print(f"[Preprocessor.transform] Transformation complete. Final shape: {df.shape}")
+        print(f"[Preprocessor.transform] Complete. Shape: {df.shape}")
         return df
 
-    def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Fit and transform in one step (convenience method for training data)."""
-        return self.fit(df).transform(df, is_train=True)
+    def fit_transform(self, df: pd.DataFrame, y=None, is_train: bool = True, **fit_params) -> pd.DataFrame:
+        """Override to ensure is_train defaults to True during pipeline training."""
+        return self.fit(df, y).transform(df, is_train=is_train)
 
-    # ── Internal Methods ──────────────────────────────────────────────────
+    # ── Internal Methods (unchanged logic) ────────────────────────────────
 
-    def _identify_feature_types(self, df: pd.DataFrame) -> None:
-        """Identify numeric and categorical features, excluding target and drop list."""
-        exclude = [TARGET_COLUMN, TARGET_LOG, 'Sale_Date'] + DROP_FEATURES
+    def _identify_feature_types(self, df: pd.DataFrame):
+        exclude = {TARGET_COLUMN, TARGET_LOG, 'Sale_Date'} | set(DROP_FEATURES)
+        self.numeric_features = [c for c in df.select_dtypes(include=[np.number]).columns if c not in exclude]
+        self.categorical_features = [c for c in df.select_dtypes(include=['object', 'string']).columns if c not in exclude]
 
-        self.numeric_features = [
-            col for col in df.select_dtypes(include=[np.number]).columns
-            if col not in exclude
-        ]
-        self.categorical_features = [
-            col for col in df.select_dtypes(include=['object', 'string']).columns
-            if col not in exclude
-        ]
-
-        print(f"[Preprocessor] Identified {len(self.numeric_features)} numeric features")
-        print(f"[Preprocessor] Identified {len(self.categorical_features)} categorical features")
-
-    def _impute_missing(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Apply two-tier imputation strategy:
-            1. Group-aware: numeric features imputed with per-Product-Group medians
-            2. Standard:    remaining numeric NaN -> column median, categorical NaN -> 'Unknown'
-        """
-        print("[Preprocessor] Applying imputation...")
-
-        # Tier 1: Group-aware imputation (fitted medians from training)
-        for feature, group_medians in self.group_medians.items():
-            if feature in df.columns:
-                before = df[feature].isna().sum()
-                df[feature] = df[feature].fillna(df['Product Group'].map(group_medians))
-                filled = before - df[feature].isna().sum()
-                if filled > 0:
-                    print(f"[Preprocessor]   -> {feature}: filled {filled:,} values using Product Group medians")
-
-        # Tier 2: Standard imputation for remaining nulls
-        for col in self.numeric_features:
+    def _apply_imputation(self, df: pd.DataFrame):
+        for col, medians in self.group_medians.items():
             if col in df.columns:
-                missing = df[col].isna().sum()
-                if missing > 0:
-                    df[col] = df[col].fillna(df[col].median())
-                    print(f"[Preprocessor]   -> {col}: filled {missing:,} NaN with median")
+                df[col] = df[col].fillna(df['Product Group'].map(medians))
+        
+        for col in self.numeric_features:
+            if col in df.columns and col in self.global_medians:
+                df[col] = df[col].fillna(self.global_medians[col])
 
         for col in self.categorical_features:
             if col in df.columns:
-                missing = df[col].isna().sum()
-                if missing > 0:
-                    df[col] = df[col].fillna('Unknown')
-                    print(f"[Preprocessor]   -> {col}: filled {missing:,} with 'Unknown'")
+                df[col] = df[col].fillna('Unknown')
 
-        return df
+    def _apply_column_drops(self, df: pd.DataFrame):
+        drop_list = set(DROP_FEATURES)
+        drop_list.update(df.select_dtypes(include=['datetime64']).columns)
+        protected = set(TARGET_ENCODE_FEATURES + ONEHOT_FEATURES)
+        objects = df.select_dtypes(include=['object', 'string']).columns
+        drop_list.update([c for c in objects if c not in protected and c not in {TARGET_COLUMN, TARGET_LOG}])
+        valid_drops = [c for c in drop_list if c in df.columns]
+        if valid_drops:
+            df.drop(columns=valid_drops, inplace=True)
 
-    def _drop_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Drop unwanted columns in three passes:
-            1. Explicit drop list from config
-            2. Datetime columns (already extracted to temporal features)
-            3. Remaining object columns not scheduled for encoding
-        """
-        cols_to_drop = []
+    def _apply_encoding(self, df: pd.DataFrame) -> pd.DataFrame:
+        for col, mapping in self.target_encode_maps.items():
+            if col in df.columns:
+                df[col] = df[col].map(mapping).fillna(self.global_target_mean)
 
-        # Pass 1: Config drop list
-        cols_to_drop.extend([col for col in DROP_FEATURES if col in df.columns])
-
-        # Pass 2: Datetime columns
-        cols_to_drop.extend(df.select_dtypes(include=['datetime64']).columns.tolist())
-
-        # Pass 3: Object columns not protected by encoding lists
-        protected_cols = set(TARGET_ENCODE_FEATURES + ONEHOT_FEATURES)
-        object_cols = [
-            c for c in df.select_dtypes(include=['object', 'string']).columns
-            if c not in [TARGET_COLUMN, TARGET_LOG]
-            and c not in protected_cols
-        ]
-        cols_to_drop.extend(object_cols)
-
-        cols_to_drop = list(set(cols_to_drop))
-        if cols_to_drop:
-            df = df.drop(columns=cols_to_drop, errors='ignore')
-            print(f"[Preprocessor] Dropped {len(cols_to_drop)} unwanted columns")
-
-        return df
-
-    def _encode_categorical(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Two-stage categorical encoding:
-            1. Target Encoding — high-cardinality features mapped to mean target price.
-               Unknown categories (unseen at fit time) fall back to global mean.
-            2. One-Hot Encoding — low-cardinality features with rare-label grouping.
-               Categories below RARE_LABEL_THRESHOLD or unseen at fit time are
-               grouped into 'Other'. Output columns are aligned to training schema.
-        """
-        print("[Preprocessor] Applying categorical encoding...")
-
-        # ── Stage 1: Target Encoding ──────────────────────────────
-        te_features_present = [f for f in TARGET_ENCODE_FEATURES if f in df.columns]
-        if te_features_present and self.target_encode_maps:
-            print(f"[Preprocessor]   Target encoding {len(te_features_present)} features...")
-            for feature in te_features_present:
-                if feature in self.target_encode_maps:
-                    df[feature] = df[feature].map(self.target_encode_maps[feature]).fillna(self.global_target_mean)
-                    print(f"[Preprocessor]     -> {feature}: target encoded")
-
-        # ── Stage 2: Rare Label Grouping + One-Hot Encoding ───────
-        ohe_features_present = [f for f in ONEHOT_FEATURES if f in df.columns]
-        if ohe_features_present and self.onehot_columns:
-            print(f"[Preprocessor]   One-hot encoding {len(ohe_features_present)} features with rare label grouping...")
-
-            df_ohe = df[ohe_features_present].copy()
-
-            # Group rare and unseen categories into 'Other'
-            for feature in ohe_features_present:
-                rare_cats = self.rare_categories_map.get(feature, set())
-                known_cats = self.known_categories.get(feature, set())
-                df_ohe[feature] = df_ohe[feature].apply(
-                    lambda x: 'Other' if (x in rare_cats or x not in known_cats) else x
-                )
+        ohe_cols = [c for c in ONEHOT_FEATURES if c in df.columns]
+        if ohe_cols and self.onehot_columns:
+            df_ohe = df[ohe_cols].copy()
+            for col in ohe_cols:
+                rare = self.rare_categories_map.get(col, set())
+                known = self.known_categories.get(col, set())
+                if rare or known:
+                    mask_rare = df_ohe[col].isin(rare)
+                    mask_unknown = ~df_ohe[col].isin(known)
+                    df_ohe.loc[mask_rare | mask_unknown, col] = 'Other'
+            
             df_ohe = df_ohe.fillna('Unknown')
-
-            # One-hot encode and align to training column schema
-            dummies = pd.get_dummies(df_ohe, columns=ohe_features_present, drop_first=True, dtype=int)
-
-            for col in self.onehot_columns:
-                if col not in dummies.columns:
-                    dummies[col] = 0
-            dummies = dummies[self.onehot_columns]
-            dummies.index = df.index
-
-            # Replace original categorical columns with dummies
-            df = df.drop(columns=ohe_features_present)
+            dummies = pd.get_dummies(df_ohe, columns=ohe_cols, drop_first=True, dtype=np.int8)
+            dummies = dummies.reindex(columns=self.onehot_columns, fill_value=0)
+            df = df.drop(columns=ohe_cols)
             df = pd.concat([df, dummies], axis=1)
-            print(f"[Preprocessor]     -> Created {len(self.onehot_columns)} one-hot features")
 
-        # ── Sanitize column names for LightGBM compatibility ─────
-        df = sanitize_column_names(df)
-        return df
-
-
+        return sanitize_column_names(df)
+    
 # ============================================================================
-# COMPLETE PIPELINE
+# PIPELINE ENTRY POINT
 # ============================================================================
 
 def prepare_data(df: pd.DataFrame, random_state: int = RANDOM_STATE) -> Dict[str, any]:
-    """
-    Complete data preparation pipeline: engineer -> split -> preprocess.
-
-    Split strategy (no leakage):
-        - 70% train  -> fit preprocessor here
-        - 15% val    -> model selection
-        - 15% test   -> final evaluation only
-
-    Args:
-        df: Raw DataFrame (loaded from CSV)
-        random_state: Random seed for reproducibility
-
-    Returns:
-        Dictionary with keys:
-            X_train, X_val, X_test          — preprocessed feature matrices
-            y_train, y_val, y_test          — log-transformed target
-            y_train_orig, y_val_orig, y_test_orig — original-scale target
-            preprocessor                    — fitted Preprocessor instance
-    """
+    """Execute full preparation pipeline: Engineer -> Split -> Preprocess."""
     print("\n" + "=" * 70)
     print(" DATA PREPARATION PIPELINE")
     print("=" * 70)
 
-    # ── Step 1: Feature Engineering (full dataset, no target info used) ──
+    # 1. Feature Engineering
     df = engineer_features(df)
 
-    # ── Step 2: Train / Temp split (70 / 30) ─────────────────────────────
-    print(f"\n[prepare_data] Splitting data: {TRAIN_SIZE*100:.0f}% train / {(VAL_SIZE+TEST_SIZE)*100:.0f}% temp...")
-    train_df, temp_df = train_test_split(
-        df, train_size=TRAIN_SIZE, random_state=random_state, shuffle=True
-    )
-    print(f"[prepare_data]   -> Train: {len(train_df):,} rows")
-    print(f"[prepare_data]   -> Temp:  {len(temp_df):,} rows")
+    # 2. Splits (70% Train / 15% Val / 15% Test)
+    train_df, temp_df = train_test_split(df, train_size=TRAIN_SIZE, random_state=random_state, shuffle=True)
+    val_df, test_df = train_test_split(temp_df, test_size=0.5, random_state=random_state, shuffle=True)
+    
+    print(f"Split sizes: Train={len(train_df):,}, Val={len(val_df):,}, Test={len(test_df):,}")
 
-    # ── Step 3: Val / Test split (50 / 50 of temp = 15 / 15 of total) ───
-    print(f"\n[prepare_data] Splitting temp into val / test (50/50)...")
-    val_df, test_df = train_test_split(
-        temp_df, test_size=0.5, random_state=random_state, shuffle=True
-    )
-    print(f"[prepare_data]   -> Val:  {len(val_df):,} rows ({len(val_df)/len(df)*100:.1f}%)")
-    print(f"[prepare_data]   -> Test: {len(test_df):,} rows ({len(test_df)/len(df)*100:.1f}%)")
-
-    # ── Step 4: Preprocess (fit on train only, transform all) ───────────
+    # 3. Preprocessing
     preprocessor = Preprocessor()
-    train_processed = preprocessor.fit_transform(train_df)
-    val_processed   = preprocessor.transform(val_df,  is_train=False)
-    test_processed  = preprocessor.transform(test_df, is_train=False)
+    
+    # Fit & Transform Train
+    train_processed = preprocessor.fit_transform(train_df, is_train=True)
+    
+    # Transform Val/Test (is_train=False ensures no target leakage/transformation)
+    val_processed = preprocessor.transform(val_df, is_train=False)
+    test_processed = preprocessor.transform(test_df, is_train=False)
 
-    # ── Step 5: Separate features and target ─────────────────────────────
-    print("\n[prepare_data] Separating features and target...")
+    # 4. Feature/Target Separation
+    def split_xy(data_df):
+        X = data_df.drop(columns=[TARGET_COLUMN, TARGET_LOG], errors='ignore')
+        y_log = data_df[TARGET_LOG] if TARGET_LOG in data_df.columns else np.log1p(data_df[TARGET_COLUMN])
+        return X, y_log
 
-    X_train = train_processed.drop(columns=[TARGET_COLUMN, TARGET_LOG], errors='ignore')
-    X_val   = val_processed.drop(columns=[TARGET_COLUMN, TARGET_LOG], errors='ignore')
-    X_test  = test_processed.drop(columns=[TARGET_COLUMN, TARGET_LOG], errors='ignore')
+    X_train, y_train = split_xy(train_processed)
+    X_val, y_val = split_xy(val_processed)
+    X_test, y_test = split_xy(test_processed)
 
-    # Log-transformed target (used for training)
-    y_train = train_processed[TARGET_LOG]
-    y_val   = val_processed[TARGET_LOG]   if TARGET_LOG in val_processed.columns   else np.log1p(val_df[TARGET_COLUMN])
-    y_test  = test_processed[TARGET_LOG]  if TARGET_LOG in test_processed.columns  else np.log1p(test_df[TARGET_COLUMN])
-
-    # Original-scale target (used for evaluation in real dollars)
-    y_train_orig = train_df[TARGET_COLUMN]
-    y_val_orig   = val_df[TARGET_COLUMN]
-    y_test_orig  = test_df[TARGET_COLUMN]
-
-    # ── Step 6: Summary ──────────────────────────────────────────────────
-    print("\n" + "=" * 70)
-    print(" DATA PREPARATION COMPLETE")
-    print("=" * 70)
-    print(f"  X_train: {X_train.shape}    X_val: {X_val.shape}    X_test: {X_test.shape}")
-    print(f"  y_train mean: {y_train.mean():.3f}  |  y_val mean: {y_val.mean():.3f}  |  y_test mean: {y_test.mean():.3f}")
-
+    print("\n[prepare_data] Data preparation complete.")
+    
     return {
         'X_train': X_train, 'X_val': X_val, 'X_test': X_test,
         'y_train': y_train, 'y_val': y_val, 'y_test': y_test,
-        'y_train_orig': y_train_orig, 'y_val_orig': y_val_orig, 'y_test_orig': y_test_orig,
+        'y_train_orig': train_df[TARGET_COLUMN],
+        'y_val_orig': val_df[TARGET_COLUMN],
+        'y_test_orig': test_df[TARGET_COLUMN],
         'preprocessor': preprocessor
     }
