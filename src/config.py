@@ -21,7 +21,6 @@ REPORTS_DIR.mkdir(exist_ok=True)
 
 # Data files
 TRAIN_DATA = DATA_DIR / "train_full.csv"
-#SAMPLE_DATA = DATA_DIR / "sample_train.csv"
 
 # ============================================================================
 # DATA PARAMETERS
@@ -158,7 +157,7 @@ MODELS = {
         'name': 'LightGBM',
         'description': 'Gradient boosting optimized for large datasets (110MB)',
         'params': {
-            'n_estimators': 20000,
+            'n_estimators': 200,
             'learning_rate': 0.01,
             'num_leaves': 256,
             'max_depth': 12,

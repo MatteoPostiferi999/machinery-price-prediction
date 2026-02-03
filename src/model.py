@@ -1,14 +1,17 @@
 """
 model.py
 ========
-Modular model training system for machinery price prediction.
-Implements Ridge Regression and LightGBM with proper evaluation.
+Model training and management for machinery price prediction.
 
-Design principles:
-- Each model is a separate, reusable function
-- All models follow the same interface
-- Easy to add new models
-- Comprehensive logging and error handling
+Implements two models with a clear performance gap by design:
+    - Ridge Regression: linear baseline with L2 regularization.
+      Useful for interpretability and as a lower-bound benchmark.
+    - LightGBM: gradient-boosted trees with early stopping.
+      Primary model — handles non-linearity, missing values natively,
+      and scales well on the 114 MB dataset.
+
+All models are trained on log-transformed target and predictions are
+converted back to original scale (expm1) before evaluation.
 """
 
 import numpy as np
@@ -18,11 +21,9 @@ from pathlib import Path
 from typing import Dict, Tuple, Optional
 import joblib
 
-# Model imports
 from sklearn.linear_model import Ridge
 import lightgbm as lgb
 
-# Import config
 from .config import (
     MODELS,
     MODELS_DIR,
@@ -41,45 +42,29 @@ def train_ridge(
     y_train: pd.Series,
     params: Optional[Dict] = None
 ) -> Ridge:
-    """Train Ridge Regression model."""
+    """
+    Train Ridge Regression model.
+
+    Args:
+        X_train: Training features (must be fully numeric, no NaN)
+        y_train: Training target (log-transformed)
+        params:  Hyperparameters — uses config defaults if None
+
+    Returns:
+        Fitted Ridge model
+    """
     if params is None:
         params = MODELS['ridge']['params']
-    
+
     print(f"\n[RIDGE] Training with alpha={params['alpha']:.2f}...")
-    
-    print(f"[DEBUG] X_train shape: {X_train.shape}")
-    print(f"[DEBUG] X_train dtypes unique: {X_train.dtypes.unique()}")
-    print(f"[DEBUG] Checking for non-numeric columns...")
-    
-    non_numeric = X_train.select_dtypes(exclude=[np.number]).columns
-    if len(non_numeric) > 0:
-        print(f"[ERROR] Found {len(non_numeric)} non-numeric columns:")
-        for col in non_numeric[:10]:  # Show first 10
-            print(f"  - {col}: {X_train[col].dtype}")
-        print(f"\n[ERROR] Sample values:")
-        print(X_train[non_numeric].head())
-        raise ValueError("Non-numeric columns found in training data!")
-    
-    # Check for NaN
-    nan_cols = X_train.columns[X_train.isna().any()].tolist()
-    if nan_cols:
-        print(f"[ERROR] Found {len(nan_cols)} columns with NaN:")
-        for col in nan_cols[:10]:
-            nan_count = X_train[col].isna().sum()
-            print(f"  - {col}: {nan_count} NaN values")
-        raise ValueError("NaN values found in training data!")
-    
-    print(f"[DEBUG] All checks passed! Training...")
-    # ═══ END DEBUG ═══
-    
+
     model = Ridge(**params)
-    
+
     start_time = time.time()
     model.fit(X_train, y_train)
     train_time = time.time() - start_time
-    
-    print(f"[RIDGE] ✅ Training complete in {train_time:.2f}s")
-    
+
+    print(f"[RIDGE] Training complete in {train_time:.2f}s")
     return model
 
 
@@ -92,44 +77,44 @@ def train_lightgbm(
 ) -> lgb.LGBMRegressor:
     """
     Train LightGBM model with early stopping on validation set.
-    
+
+    Early stopping monitors validation RMSE and halts training when
+    no improvement is seen for 150 consecutive rounds, preventing
+    overfitting on the large feature space.
+
     Args:
         X_train: Training features
         y_train: Training target (log-transformed)
-        X_val: Validation features
-        y_val: Validation target (log-transformed)
-        params: Model hyperparameters (uses config defaults if None)
-        
+        X_val:   Validation features
+        y_val:   Validation target (log-transformed)
+        params:  Hyperparameters — uses config defaults if None
+
     Returns:
-        Trained LightGBM model
+        Fitted LightGBM model (stopped at best iteration)
     """
     if params is None:
         params = MODELS['lightgbm']['params']
-    
-    print(f"\n[LIGHTGBM] Training with {params['n_estimators']} estimators...")
+
+    print(f"\n[LIGHTGBM] Training with {params['n_estimators']} max estimators...")
     print(f"[LIGHTGBM] Learning rate: {params['learning_rate']}, Max depth: {params['max_depth']}")
-    
+
     model = lgb.LGBMRegressor(**params)
-    
+
     start_time = time.time()
-    
-    # Train with early stopping
     model.fit(
-        X_train, 
+        X_train,
         y_train,
         eval_set=[(X_val, y_val)],
         eval_metric='rmse',
         callbacks=[
             lgb.early_stopping(stopping_rounds=150, verbose=True),
-            lgb.log_evaluation(period=500)  # Silent training
+            lgb.log_evaluation(period=500)
         ]
     )
-    
     train_time = time.time() - start_time
-    
-    print(f"[LIGHTGBM] ✅ Training complete in {train_time:.2f}s")
+
+    print(f"[LIGHTGBM] Training complete in {train_time:.2f}s")
     print(f"[LIGHTGBM] Best iteration: {model.best_iteration_}")
-    
     return model
 
 
@@ -139,83 +124,24 @@ def train_lightgbm(
 
 class ModelManager:
     """
-    Manages training, evaluation, and comparison of multiple models.
-    Provides a clean interface for the entire modeling workflow.
+    Orchestrates training, evaluation, comparison, and persistence
+    of all models in the pipeline.
+
+    Usage:
+        manager = ModelManager()
+        manager.train_all_models(X_train, y_train, X_val, y_val, y_val_orig)
+        manager.save_best_model()
     """
-    
+
     def __init__(self):
-        """Initialize the model manager."""
-        self.models = {}
-        self.results = {}
-        self.train_times = {}
-        
-        # Import evaluation functions here to avoid circular imports
+        self.models: Dict[str, object] = {}
+        self.results: Dict[str, Dict] = {}
+        self.train_times: Dict[str, float] = {}
+
+        # Lazy import to avoid circular dependency
         from .evaluation import evaluate_model
         self.evaluate_model = evaluate_model
 
-
-        
-    def analyze_worst_errors(self, model, X_val, y_val_orig, df_raw, top_n=200):
-        """
-        Trova i peggiori errori e recupera i dati originali (incluso SalesID).
-        
-        Args:
-            model: Il modello allenato
-            X_val: Le feature processate della validazione
-            y_val_orig: I target originali
-            df_raw: Il DataFrame COMPLETAMENTE GREZZO (caricato all'inizio)
-        """
-        print(f"\n🕵️‍♂️ AVVIO ANALISI FORENSE SUI PEGGIORI {top_n} ERRORI")
-        print("="*80)
-        
-        # 1. Calcola Errori
-        # Nota: X_analysis mantiene l'indice originale di pandas!
-        X_analysis = X_val.copy()
-        y_pred = np.expm1(model.predict(X_val))
-        y_true = y_val_orig.values
-        
-        X_analysis['True_Price'] = y_true
-        X_analysis['Pred_Price'] = y_pred
-        X_analysis['Error_Abs'] = np.abs(y_true - y_pred)
-        
-        # 2. Trova gli Indici dei Peggiori
-        worst_processed = X_analysis.nlargest(top_n, 'Error_Abs')
-        
-        # QUI AVVIENE LA MAGIA: Usiamo l'indice per recuperare le righe dal raw
-        # .loc[indices] pesca le righe corrispondenti nel file originale
-        worst_indices = worst_processed.index
-        
-        # Selezioniamo dal raw solo le colonne che ci interessano per l'indagine
-        # (Aggiungi qui altre colonne se vuoi vederle, es. 'UsageBand')
-        cols_to_inspect = ['Sales ID', 'MachineID', 'ModelID', 'datasource', 
-                        'Year Made', 'Product Group', 'Product Class Description',
-                        'UsageBand', 'fiModelDesc', 'fiBaseModel']
-        
-        # Verifica che le colonne esistano nel raw (per sicurezza)
-        cols_existing = [c for c in cols_to_inspect if c in df_raw.columns]
-        
-        # Estraiamo i dati grezzi
-        forensic_data = df_raw.loc[worst_indices, cols_existing].copy()
-        
-        # Aggiungiamo le info sull'errore per comodità
-        forensic_data['True_Price'] = worst_processed['True_Price']
-        forensic_data['Pred_Price'] = worst_processed['Pred_Price']
-        forensic_data['Error_Abs'] = worst_processed['Error_Abs']
-        
-        # 3. Salvataggio Report
-        print(f"Recuperati ID originali per {len(forensic_data)} righe.")
-        
-        # Mostra i primi 5 a video
-        print("\n[ANTEPRIMA DATASET FORENSE CON ID]")
-        print(forensic_data[['Sales ID', 'True_Price', 'Pred_Price']].head().to_string(index=False))
-        
-        save_path = "reports/worst_errors_forensic.csv"
-        forensic_data.to_csv(save_path, index=False)
-        print(f"\n💾 Report completo salvato in: {save_path}")
-        print("   (Apri questo file in Excel per leggere le descrizioni complete!)")
-        
-        return forensic_data
-    
     def train_all_models(
         self,
         X_train: pd.DataFrame,
@@ -225,38 +151,29 @@ class ModelManager:
         y_val_orig: pd.Series
     ) -> Dict[str, Dict]:
         """
-        Train all configured models and evaluate on validation set.
-        
+        Train all configured models and evaluate each on the validation set.
+
         Args:
-            X_train: Training features
-            y_train: Training target (log-transformed)
-            X_val: Validation features
-            y_val: Validation target (log-transformed)
-            y_val_orig: Validation target (original scale)
-            
+            X_train:    Training features
+            y_train:    Training target (log-transformed)
+            X_val:      Validation features
+            y_val:      Validation target (log-transformed)
+            y_val_orig: Validation target (original scale, for evaluation)
+
         Returns:
-            Dictionary with results for each model
+            Dictionary mapping model name -> evaluation metrics
         """
-        print("\n" + "="*80)
-        print("TRAINING MODELS")
-        print("="*80)
-        print(f"Training set: {X_train.shape[0]:,} samples × {X_train.shape[1]} features")
-        print(f"Validation set: {X_val.shape[0]:,} samples")
-        
-        # Train Ridge
-        self._train_single_model(
-            'ridge',
-            X_train, y_train, X_val, y_val, y_val_orig
-        )
-        
-        # Train LightGBM
-        self._train_single_model(
-            'lightgbm',
-            X_train, y_train, X_val, y_val, y_val_orig
-        )
-        
+        print("\n" + "=" * 70)
+        print(" TRAINING MODELS")
+        print("=" * 70)
+        print(f"  Train: {X_train.shape[0]:,} samples x {X_train.shape[1]} features")
+        print(f"  Val:   {X_val.shape[0]:,} samples")
+
+        self._train_single_model('ridge',    X_train, y_train, X_val, y_val, y_val_orig)
+        self._train_single_model('lightgbm', X_train, y_train, X_val, y_val, y_val_orig)
+
         return self.results
-    
+
     def _train_single_model(
         self,
         model_name: str,
@@ -267,212 +184,187 @@ class ModelManager:
         y_val_orig: pd.Series
     ) -> None:
         """
-        Train a single model and evaluate it.
-        
+        Train one model, predict on validation, evaluate, and store results.
+
         Args:
-            model_name: Name of model ('ridge' or 'lightgbm')
-            X_train: Training features
-            y_train: Training target (log-transformed)
-            X_val: Validation features
-            y_val: Validation target (log-transformed)
+            model_name: Key in MODELS config ('ridge' or 'lightgbm')
+            X_train:    Training features
+            y_train:    Training target (log-transformed)
+            X_val:      Validation features
+            y_val:      Validation target (log-transformed)
             y_val_orig: Validation target (original scale)
         """
         start_time = time.time()
-        
-        # Train model based on type
+
         if model_name == 'ridge':
             model = train_ridge(X_train, y_train)
         elif model_name == 'lightgbm':
             model = train_lightgbm(X_train, y_train, X_val, y_val)
         else:
             raise ValueError(f"Unknown model: {model_name}")
-        
+
         train_time = time.time() - start_time
-        
-        # Make predictions
-        y_val_pred_log = model.predict(X_val)
-        y_val_pred = np.expm1(y_val_pred_log)  # Convert back to original scale
-        
-        # Evaluate
+
+        # Predict and convert from log-scale back to dollars
+        y_val_pred = np.expm1(model.predict(X_val))
+
+        # Evaluate against original-scale targets
         metrics = self.evaluate_model(y_val_orig, y_val_pred)
-        
-        # Store results
+
+        # Store everything
         self.models[model_name] = model
         self.results[model_name] = metrics
         self.train_times[model_name] = train_time
-        
-        # Print results
+
         self._print_model_results(model_name, metrics, train_time)
-    
-    def _print_model_results(
-        self,
-        model_name: str,
-        metrics: Dict[str, float],
-        train_time: float
-    ) -> None:
-        """Print model evaluation results."""
+
+    def _print_model_results(self, model_name: str, metrics: Dict[str, float], train_time: float) -> None:
+        """Print formatted validation results for one model."""
         print(f"\n[{model_name.upper()}] Validation Results:")
         print(f"   Training time: {train_time:.2f}s")
         print(f"   MAE:  ${metrics['MAE']:>10,.2f}")
         print(f"   RMSE: ${metrics['RMSE']:>10,.2f}")
-        print(f"   R²:   {metrics['R2']:>11.4f}")
-    
-    def get_best_model(self) -> Tuple[str, any]:
+        print(f"   R2:   {metrics['R2']:>11.4f}")
+
+    # ── Model selection & comparison ──────────────────────────────────────
+
+    def get_best_model(self) -> Tuple[str, object]:
         """
-        Get the best model based on configured metric.
-        
+        Select the best model based on BEST_METRIC from config.
+
         Returns:
-            Tuple of (model_name, model_object)
+            Tuple of (model_name, fitted model object)
         """
         if not self.results:
-            raise ValueError("No models have been trained yet!")
-        
+            raise ValueError("No models have been trained yet.")
+
         if BEST_METRIC == 'R2':
-            # Maximize R²
-            best_name = max(
-                self.results.keys(),
-                key=lambda k: self.results[k]['R2']
-            )
+            best_name = max(self.results, key=lambda k: self.results[k]['R2'])
         else:
-            # Minimize MAE or RMSE
-            best_name = min(
-                self.results.keys(),
-                key=lambda k: self.results[k][BEST_METRIC]
-            )
-        
+            best_name = min(self.results, key=lambda k: self.results[k][BEST_METRIC])
+
         return best_name, self.models[best_name]
-    
+
     def compare_models(self) -> pd.DataFrame:
         """
-        Create a comparison table of all models.
-        
+        Build a human-readable comparison table of all trained models.
+
         Returns:
-            DataFrame with model comparison
+            DataFrame sorted by R2 descending
         """
         if not self.results:
-            raise ValueError("No models have been trained yet!")
-        
-        comparison = []
-        
+            raise ValueError("No models have been trained yet.")
+
+        rows = []
         for name, metrics in self.results.items():
-            comparison.append({
-                'Model': MODELS[name]['name'],
-                'MAE ($)': f"${metrics['MAE']:,.0f}",
-                'RMSE ($)': f"${metrics['RMSE']:,.0f}",
-                'R²': f"{metrics['R2']:.4f}",
+            rows.append({
+                'Model':          MODELS[name]['name'],
+                'MAE ($)':        f"${metrics['MAE']:,.0f}",
+                'RMSE ($)':       f"${metrics['RMSE']:,.0f}",
+                'R2':             f"{metrics['R2']:.4f}",
                 'Train Time (s)': f"{self.train_times[name]:.2f}"
             })
-        
-        df = pd.DataFrame(comparison)
-        
-        # Sort by R² (best first)
-        df['R²_numeric'] = df['R²'].astype(float)
-        df = df.sort_values('R²_numeric', ascending=False)
-        df = df.drop('R²_numeric', axis=1)
-        
+
+        df = pd.DataFrame(rows)
+        df = df.sort_values(by='R2', ascending=False).reset_index(drop=True)
         return df
-    
+
+    # ── Persistence ───────────────────────────────────────────────────────
+
     def save_best_model(self, filename: str = "best_model.pkl") -> Path:
         """
-        Save the best model to disk.
-        
+        Save the best model and its metadata to MODELS_DIR.
+
         Args:
-            filename: Name of file to save model
-            
+            filename: Filename for the model pickle
+
         Returns:
-            Path to saved model
+            Path to saved model file
         """
         best_name, best_model = self.get_best_model()
-        
         filepath = MODELS_DIR / filename
         joblib.dump(best_model, filepath)
-        
-        print(f"\n💾 Best model ({MODELS[best_name]['name']}) saved to: {filepath}")
-        
-        # Also save metadata
+        print(f"\n[ModelManager] Best model ({MODELS[best_name]['name']}) saved to: {filepath}")
+
+        # Metadata: model identity, metrics, feature list
         metadata = {
-            'model_name': best_name,
-            'model_type': MODELS[best_name]['name'],
-            'metrics': self.results[best_name],
-            'train_time': self.train_times[best_name],
-            'features': list(best_model.feature_names_in_) if hasattr(best_model, 'feature_names_in_') else None
+            'model_name':  best_name,
+            'model_type':  MODELS[best_name]['name'],
+            'metrics':     self.results[best_name],
+            'train_time':  self.train_times[best_name],
+            'features':    list(best_model.feature_names_in_) if hasattr(best_model, 'feature_names_in_') else None
         }
-        
         metadata_path = MODELS_DIR / filename.replace('.pkl', '_metadata.pkl')
         joblib.dump(metadata, metadata_path)
-        print(f"💾 Model metadata saved to: {metadata_path}")
-        
+        print(f"[ModelManager] Metadata saved to: {metadata_path}")
+
         return filepath
-    
+
     def save_all_models(self) -> None:
-        """Save all trained models to disk."""
-        print(f"\n💾 Saving all models to {MODELS_DIR}/")
-        
+        """Save every trained model to MODELS_DIR."""
+        print(f"\n[ModelManager] Saving all models to {MODELS_DIR}/")
         for name, model in self.models.items():
-            filename = f"{name}_model.pkl"
-            filepath = MODELS_DIR / filename
+            filepath = MODELS_DIR / f"{name}_model.pkl"
             joblib.dump(model, filepath)
-            print(f"   ✅ Saved {MODELS[name]['name']}: {filename}")
-    
+            print(f"[ModelManager]   Saved {MODELS[name]['name']}: {filepath.name}")
+
+    # ── Feature importance ────────────────────────────────────────────────
+
     def get_feature_importance(self, model_name: str, top_n: int = 20) -> Optional[pd.DataFrame]:
         """
-        Get feature importance for tree-based models.
-        
+        Extract feature importance from a trained model.
+
+        For LightGBM: uses native feature_importances_ (gain-based).
+        For Ridge:    uses absolute coefficient values as a proxy.
+
         Args:
-            model_name: Name of model
-            top_n: Number of top features to return
-            
+            model_name: Key in self.models
+            top_n:      Number of top features to return
+
         Returns:
-            DataFrame with feature importance or None if not available
+            DataFrame with 'Feature' and 'Importance' columns, or None
         """
         if model_name not in self.models:
-            raise ValueError(f"Model {model_name} not found!")
-        
+            raise ValueError(f"Model '{model_name}' not found.")
+
         model = self.models[model_name]
-        
-        # LightGBM has feature_importances_
+
         if hasattr(model, 'feature_importances_'):
-            importances = model.feature_importances_
-            features = model.feature_names_in_ if hasattr(model, 'feature_names_in_') else range(len(importances))
-            
+            # Tree-based models (LightGBM)
+            features = model.feature_names_in_ if hasattr(model, 'feature_names_in_') else range(len(model.feature_importances_))
             df = pd.DataFrame({
-                'Feature': features,
-                'Importance': importances
-            }).sort_values('Importance', ascending=False).head(top_n)
-            
-            return df
-        
-        # Ridge has coefficients (not really "importance" but useful)
+                'Feature':    features,
+                'Importance': model.feature_importances_
+            })
         elif hasattr(model, 'coef_'):
-            coefs = np.abs(model.coef_)  # Absolute value for ranking
-            features = model.feature_names_in_ if hasattr(model, 'feature_names_in_') else range(len(coefs))
-            
+            # Linear models (Ridge) — absolute coefficients
+            features = model.feature_names_in_ if hasattr(model, 'feature_names_in_') else range(len(model.coef_))
             df = pd.DataFrame({
-                'Feature': features,
-                'Coefficient (abs)': coefs
-            }).sort_values('Coefficient (abs)', ascending=False).head(top_n)
-            
-            return df
-        
-        return None
+                'Feature':    features,
+                'Importance': np.abs(model.coef_)
+            })
+        else:
+            return None
+
+        return df.sort_values('Importance', ascending=False).head(top_n).reset_index(drop=True)
 
 
 # ============================================================================
-# CONVENIENCE FUNCTION
+# PIPELINE ENTRY POINT
 # ============================================================================
 
 def train_models(data: Dict) -> ModelManager:
     """
-    Convenience function to train all models.
-    
+    Train all models, print comparison, save best.
+
     Args:
-        data: Dictionary from prepare_data() with train/val/test splits
-        
+        data: Dictionary from prepare_data() containing train/val splits
+
     Returns:
-        Trained ModelManager instance
+        Fitted ModelManager instance (access models, results, etc.)
     """
     manager = ModelManager()
-    
+
     manager.train_all_models(
         X_train=data['X_train'],
         y_train=data['y_train'],
@@ -480,21 +372,21 @@ def train_models(data: Dict) -> ModelManager:
         y_val=data['y_val'],
         y_val_orig=data['y_val_orig']
     )
-    
-    # Print comparison
-    print("\n" + "="*80)
-    print("MODEL COMPARISON")
-    print("="*80)
+
+    # Print comparison table
+    print("\n" + "=" * 70)
+    print(" MODEL COMPARISON")
+    print("=" * 70)
     print(manager.compare_models().to_string(index=False))
-    
-    # Identify best model
+
+    # Announce best model
     best_name, _ = manager.get_best_model()
     best_metrics = manager.results[best_name]
-    print(f"\n🏆 Best Model: {MODELS[best_name]['name']}")
-    print(f"   R²: {best_metrics['R2']:.4f}")
-    print(f"   MAE: ${best_metrics['MAE']:,.0f}")
-    
-    # Save best model
+    print(f"\n  Best model: {MODELS[best_name]['name']}")
+    print(f"  R2:  {best_metrics['R2']:.4f}")
+    print(f"  MAE: ${best_metrics['MAE']:,.0f}")
+
+    # Persist
     manager.save_best_model()
-    
+
     return manager
