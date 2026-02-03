@@ -7,8 +7,7 @@ Production code for Blue Book for Bulldozers ML pipeline.
 __version__ = "0.1.0"
 __author__ = "Matteo Postiferi"
 
-# Optional: Make imports easier
+# Import functions from refactored modules
 from .config import *
-from .preprocessing import load_data, prepare_data
-# from .model import train_models  # When ready
-# from .evaluation import evaluate_model  # When ready
+from .data import load_raw_data, load_and_split
+from .preprocessing import build_preprocessor
