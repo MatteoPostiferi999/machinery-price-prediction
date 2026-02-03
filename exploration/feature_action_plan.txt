@@ -1,0 +1,132 @@
+================================================================================
+FEATURE ACTION PLAN
+================================================================================
+
+Total features after OHE : 7,361
+Features with importance 0: 6,487
+Features in bottom 5 %    : 6,487
+Top-50 cumulative importance: 61.6 %
+
+--------------------------------------------------------------------------------
+HIGH-CARDINALITY CATEGORICALS  →  replace OHE with target/ordinal encoding
+--------------------------------------------------------------------------------
+  Model Description                         unique= 5,059   nulls=  0.0 %   samples=['521D', '950FII', '226', 'PC120-6E', 'S175']
+  Sales date                                unique= 4,013   nulls=  0.0 %   samples=['11/16/2006 0:00', '3/26/2004 0:00', '2/26/2004 0:00', '5/19/2011 0:00', '7/23/2009 0:00']
+  Base Model                                unique= 1,961   nulls=  0.0 %   samples=['521', '950', '226', 'PC120', 'S175']
+  Secondary Description                     unique=   177   nulls= 34.1 %   samples=['D', 'F', 'G', 'E', 'HAG']
+  Model Descriptor                          unique=   137   nulls= 81.9 %   samples=['LC', '6', 'L', 'LT', 'CR']
+  Model Series                              unique=   120   nulls= 85.8 %   samples=['II', '-6E', 'LC', '-5', 'III']
+  Product Class Description                 unique=    74   nulls=  0.0 %   samples=['Type E - 110.0 to 120.0 Horsepower', 'Type E - 150.0 to 175.0 Horsepower', 'Type F - 1351.0 to 1601.0 Lb Operating Capacity', 'Type C - 12.0 to 14.0 Metric Tons', 'Type F - 1601.0 to 1751.0 Lb Operating Capacity']
+  State of Usage                            unique=    53   nulls=  0.0 %   samples=['Alabama', 'North Carolina', 'New York', 'Texas', 'Arizona']
+
+--------------------------------------------------------------------------------
+FEATURES TO DROP  (importance == 0 or bottom 5 %)
+--------------------------------------------------------------------------------
+  Base_Model_3200                                               imp=0
+  Model_Description_ZX600                                       imp=0
+  Model_Description_PR712M                                      imp=0
+  Base_Model_335                                                imp=0
+  Base_Model_319                                                imp=0
+  Base_Model_337                                                imp=0
+  Base_Model_34                                                 imp=0
+  Model_Description_ZX350LCH3                                   imp=0
+  Base_Model_3400                                               imp=0
+  Model_Description_ZX350LC3                                    imp=0
+  Base_Model_334                                                imp=0
+  Base_Model_104                                                imp=0
+  Model_Description_ZX50                                        imp=0
+  Model_Description_PR711                                       imp=0
+  Model_Description_ZX50U                                       imp=0
+  Base_Model_332                                                imp=0
+  Base_Model_1066                                               imp=0
+  Base_Model_328                                                imp=0
+  Model_Description_ZX350LC                                     imp=0
+  Model_Description_PR721C                                      imp=0
+  Base_Model_305                                                imp=0
+  Model_Description_ZX350H                                      imp=0
+  Model_Description_PR711M                                      imp=0
+  Model_Description_ZX50U-2                                     imp=0
+  Base_Model_341                                                imp=0
+  Base_Model_344                                                imp=0
+  Model_Description_ZX70                                        imp=0
+  Model_Description_ZX75                                        imp=0
+  Model_Description_ZX35U                                       imp=0
+  Model_Description_ZX75USA                                     imp=0
+  Model_Description_ZX450LCH                                    imp=0
+  Model_Description_ZX80                                        imp=0
+  Model_Description_ZX800                                       imp=0
+  Base_Model_308                                                imp=0
+  Base_Model_316                                                imp=0
+  Model_Description_PR721                                       imp=0
+  Model_Description_ZX450                                       imp=0
+  Model_Description_ZX35U3                                      imp=0
+  Model_Description_ZX450-3                                     imp=0
+  Model_Description_ZX800LC                                     imp=0
+  ... and 6447 more (see full CSV)
+
+--------------------------------------------------------------------------------
+FEATURES TO KEEP  (top 50 — drive 90 %+ of model performance)
+--------------------------------------------------------------------------------
+  Sale_Year                                                     imp_pct=  9.86 %   cum=   9.9 %
+  Year_Made                                                     imp_pct=  9.02 %   cum=  18.9 %
+  Machine_Age                                                   imp_pct=  8.62 %   cum=  27.5 %
+  Unnamed__0                                                    imp_pct=  6.69 %   cum=  34.2 %
+  Weight_Tons                                                   imp_pct=  3.44 %   cum=  37.6 %
+  Horsepower                                                    imp_pct=  2.96 %   cum=  40.6 %
+  Enclosure_EROPS_w_AC                                          imp_pct=  2.34 %   cum=  42.9 %
+  Sale_Month                                                    imp_pct=  1.94 %   cum=  44.9 %
+  MachineHours_CurrentMeter                                     imp_pct=  1.42 %   cum=  46.3 %
+  Secondary_Description_Unknown                                 imp_pct=  0.79 %   cum=  47.1 %
+  Enclosure_OROPS                                               imp_pct=  0.77 %   cum=  47.9 %
+  Secondary_Description_G                                       imp_pct=  0.57 %   cum=  48.4 %
+  Product_Group_SSL                                             imp_pct=  0.56 %   cum=  49.0 %
+  Model_Descriptor_L                                            imp_pct=  0.56 %   cum=  49.5 %
+  Has_Hours                                                     imp_pct=  0.46 %   cum=  50.0 %
+  Ripper_None_or_Unspecified                                    imp_pct=  0.45 %   cum=  50.5 %
+  Secondary_Description_H                                       imp_pct=  0.45 %   cum=  50.9 %
+  Machine_Size_Large                                            imp_pct=  0.44 %   cum=  51.3 %
+  Model_Series_Unknown                                          imp_pct=  0.44 %   cum=  51.8 %
+  Base_Model_966                                                imp_pct=  0.44 %   cum=  52.2 %
+  Machine_Size_Unknown                                          imp_pct=  0.44 %   cum=  52.7 %
+  Model_Descriptor_Unknown                                      imp_pct=  0.42 %   cum=  53.1 %
+  Secondary_Description_E                                       imp_pct=  0.40 %   cum=  53.5 %
+  Secondary_Description_A                                       imp_pct=  0.39 %   cum=  53.9 %
+  Driver_System_Two_Wheel_Drive                                 imp_pct=  0.39 %   cum=  54.3 %
+  State_of_Usage_Texas                                          imp_pct=  0.37 %   cum=  54.6 %
+  Secondary_Description_B                                       imp_pct=  0.37 %   cum=  55.0 %
+  Product_Group_MG                                              imp_pct=  0.36 %   cum=  55.4 %
+  Product_Class_Description_Type_E_-_120_0_to_135_0_Horsepower  imp_pct=  0.36 %   cum=  55.7 %
+  Usage_Band_Low                                                imp_pct=  0.35 %   cum=  56.1 %
+  Digging_Depth_Ft                                              imp_pct=  0.35 %   cum=  56.4 %
+  Base_Model_950                                                imp_pct=  0.35 %   cum=  56.8 %
+  Secondary_Description_R                                       imp_pct=  0.33 %   cum=  57.1 %
+  Product_Class_Description_Type_F_-_0_0_to_701_0_Lb_Operating_Capacity  imp_pct=  0.33 %   cum=  57.4 %
+  Product_Class_Description_Type_D_-_260_0_+_Horsepower         imp_pct=  0.32 %   cum=  57.8 %
+  Secondary_Description_C                                       imp_pct=  0.30 %   cum=  58.0 %
+  Version_Standard                                              imp_pct=  0.30 %   cum=  58.4 %
+  Control_Unknown                                               imp_pct=  0.28 %   cum=  58.6 %
+  Base_Model_D6                                                 imp_pct=  0.28 %   cum=  58.9 %
+  Secondary_Description_N                                       imp_pct=  0.28 %   cum=  59.2 %
+  State_of_Usage_Florida                                        imp_pct=  0.28 %   cum=  59.5 %
+  Product_Class_Description_Type_F_-_2701_0+_Lb_Operating_Capacity  imp_pct=  0.26 %   cum=  59.7 %
+  Product_Class_Description_Type_E_-_60_0_to_80_0_Horsepower    imp_pct=  0.26 %   cum=  60.0 %
+  Product_Class_Description_Type_F_-_701_0_to_976_0_Lb_Operating_Capacity  imp_pct=  0.25 %   cum=  60.2 %
+  Ripper_Unknown                                                imp_pct=  0.24 %   cum=  60.5 %
+  Base_Model_570                                                imp_pct=  0.24 %   cum=  60.7 %
+  Coupler_None_or_Unspecified                                   imp_pct=  0.23 %   cum=  61.0 %
+  Base_Model_T500                                               imp_pct=  0.23 %   cum=  61.2 %
+  Product_Class_Description_Type_F_-_1251_0_to_1351_0_Lb_Operating_Capacity  imp_pct=  0.23 %   cum=  61.4 %
+  Product_Class_Description_Type_F_-_1351_0_to_1601_0_Lb_Operating_Capacity  imp_pct=  0.22 %   cum=  61.6 %
+
+================================================================================
+EXPECTED OUTCOME AFTER CLEANUP
+================================================================================
+  Current features : 7,361
+  Features to drop : ~6,487 (zero importance)
+  High-card cols   : 8 columns → replace with 1 encoded col each
+  Estimated final  : ~50–200 features
+
+  This should:
+    • Cut training time by 60-80 %
+    • Maintain or IMPROVE R² (less noise)
+    • Make feature importance chart readable

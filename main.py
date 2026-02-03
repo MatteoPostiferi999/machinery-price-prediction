@@ -39,6 +39,26 @@ def main():
     print("\n[STEP 3] MODEL TRAINING")
     print("-" * 80)
     manager = train_models(data)
+
+    print("\n[STEP 3.5] FEATURE IMPORTANCE ANALYSIS")
+    print("-" * 80)
+    
+    # Recuperiamo il nome del modello migliore (es. 'lightgbm')
+    best_name, _ = manager.get_best_model()
+    
+    # Chiediamo al manager: "Quali sono le top 20 feature per questo modello?"
+    importance_df = manager.get_feature_importance(best_name, top_n=20)
+    
+    if importance_df is not None:
+        print(f"\n[ANALISI] Le 20 variabili più importanti per {best_name.upper()}:")
+        print(importance_df.to_string(index=False))
+        
+        # Opzionale: Salviamo su CSV per guardarlo con calma
+        report_path = Path("reports") / "feature_importance.csv"
+        importance_df.to_csv(report_path, index=False)
+        print(f"\n💾 Salvata classifica completa in: {report_path}")
+    else:
+        print("Feature importance non disponibile per questo modello.")
     
     # ── STEP 4: Final Summary ─────────────────────────────────────
     print("\n" + "="*80)

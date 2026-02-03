@@ -75,7 +75,7 @@ PRICE_UPPER_BOUND = 107500  # 99th percentile
 MIN_YEAR = 1950  # Filter out data errors (years like 1000)
 
 # Missing value thresholds
-DROP_MISSING_THRESHOLD = 0.80  # Drop columns with >80% missing
+DROP_MISSING_THRESHOLD = 0.75  # Drop columns with >80% missing
 
 # ============================================================================
 # ENCODING STRATEGY

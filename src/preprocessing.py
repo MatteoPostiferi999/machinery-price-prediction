@@ -81,7 +81,7 @@ def sanitize_column_names(df: pd.DataFrame) -> pd.DataFrame:
         else:
             seen[col] = 0
             final_columns.append(col)
-            
+
     df.columns = final_columns
     
     return df
@@ -215,7 +215,7 @@ class Preprocessor:
     def __init__(self):
         """Initialize preprocessor with empty state."""
         self.scaler: Optional[StandardScaler] = None
-        self.encoder: Optional[OneHotEncoder] = None  # ← NEW
+        self.encoder: Optional[OneHotEncoder] = None  
         self.group_medians: Dict[str, pd.Series] = {}
         self.numeric_features: list = []
         self.categorical_features: list = []
