@@ -11,7 +11,6 @@ from pathlib import Path
 # PATHS
 # ============================================================================
 PROJECT_ROOT = Path(__file__).parent.parent
-print("PROJECT_ROOT:", PROJECT_ROOT)
 DATA_DIR = PROJECT_ROOT / "data"
 MODELS_DIR = PROJECT_ROOT / "models"
 REPORTS_DIR = PROJECT_ROOT / "reports"
@@ -22,7 +21,7 @@ REPORTS_DIR.mkdir(exist_ok=True)
 
 # Data files
 TRAIN_DATA = DATA_DIR / "train_full.csv"
-SAMPLE_DATA = DATA_DIR / "sample_train.csv"
+#SAMPLE_DATA = DATA_DIR / "sample_train.csv"
 
 # ============================================================================
 # DATA PARAMETERS
@@ -101,32 +100,33 @@ TARGET_ENCODE_FEATURES = [
 # ============================================================================
 # MODEL PARAMETERS
 # ============================================================================
-# Baseline models to train
+
+# Models to train
 MODELS = {
-    'linear': {
-        'name': 'Linear Regression',
-        'params': {}
-    },
-    'rf': {
-        'name': 'Random Forest',
+    'ridge': {
+        'name': 'Ridge Regression',
+        'description': 'Simple linear model with L2 regularization',
         'params': {
-            'n_estimators': 100,
-            'max_depth': 20,
-            'min_samples_split': 5,
-            'n_jobs': -1,
+            'alpha': 1.0,  # Regularization strength
             'random_state': RANDOM_STATE
         }
     },
-    'xgb': {
-        'name': 'XGBoost',
+    'lightgbm': {
+        'name': 'LightGBM',
+        'description': 'Gradient boosting optimized for large datasets (110MB)',
         'params': {
-            'n_estimators': 200,
+            'n_estimators': 500,
             'learning_rate': 0.05,
-            'max_depth': 6,
+            'num_leaves': 31,
+            'max_depth': 10,
+            'min_child_samples': 20,
             'subsample': 0.8,
             'colsample_bytree': 0.8,
+            'reg_alpha': 0.1,   # L1 regularization
+            'reg_lambda': 0.1,  # L2 regularization
             'n_jobs': -1,
-            'random_state': RANDOM_STATE
+            'random_state': RANDOM_STATE,
+            'verbose': -1
         }
     }
 }
@@ -134,7 +134,26 @@ MODELS = {
 # ============================================================================
 # EVALUATION METRICS
 # ============================================================================
-METRICS = ['MAE', 'RMSE', 'R2', 'MAPE']
+
+# Primary metrics for model evaluation
+PRIMARY_METRICS = ['MAE', 'RMSE', 'R2']
+
+# Metric for selecting best model (will be maximized for R2, minimized for MAE/RMSE)
+BEST_METRIC = 'R2'
+
+# Metric descriptions for reporting
+METRIC_DESCRIPTIONS = {
+    'MAE': 'Mean Absolute Error (lower is better)',
+    'RMSE': 'Root Mean Squared Error (lower is better)',
+    'R2': 'R² Score (higher is better)'
+}
+
+# Metric formatting for display
+METRIC_FORMATS = {
+    'MAE': '${:,.0f}',
+    'RMSE': '${:,.0f}',
+    'R2': '{:.4f}'
+}
 
 # ============================================================================
 # VISUALIZATION SETTINGS

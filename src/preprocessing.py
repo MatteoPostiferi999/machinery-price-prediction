@@ -10,7 +10,8 @@ import numpy as np
 import re
 from pathlib import Path
 from typing import Dict, Tuple, Optional
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import train_test_split
 
 # Import configuration
@@ -29,6 +30,61 @@ from .config import (
     MIN_YEAR,
     DROP_MISSING_THRESHOLD
 )
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def sanitize_column_names(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Sanitize column names to be compatible with LightGBM and other libraries.
+    
+    LightGBM does not support special JSON characters: [ ] < > : " ,
+    This function replaces them with safe alternatives.
+    
+    Args:
+        df: DataFrame with potentially problematic column names
+        
+    Returns:
+        DataFrame with sanitized column names
+    """
+    # Map of problematic characters to replacements
+    replacements = {
+        '[': '(',
+        ']': ')',
+        '<': 'lt',
+        '>': 'gt',
+        ':': '_',
+        '"': '',
+        ',': '_',
+        '{': '(',
+        '}': ')', 
+        '.': '_'
+    }
+    
+    # Create new column names
+    new_columns = []
+    for col in df.columns:
+        new_col = col
+        for char, replacement in replacements.items():
+            new_col = new_col.replace(char, replacement)
+        new_columns.append(new_col)
+    
+
+    final_columns = []
+    seen = {}
+    for col in new_columns:
+        if col in seen:
+            seen[col] += 1
+            final_columns.append(f"{col}_{seen[col]}")
+        else:
+            seen[col] = 0
+            final_columns.append(col)
+            
+    df.columns = final_columns
+    
+    return df
 
 
 # ============================================================================
@@ -159,6 +215,7 @@ class Preprocessor:
     def __init__(self):
         """Initialize preprocessor with empty state."""
         self.scaler: Optional[StandardScaler] = None
+        self.encoder: Optional[OneHotEncoder] = None  # ← NEW
         self.group_medians: Dict[str, pd.Series] = {}
         self.numeric_features: list = []
         self.categorical_features: list = []
@@ -196,6 +253,19 @@ class Preprocessor:
             # Temporarily fill NaN for fitting (will be properly imputed in transform)
             df_temp = df[self.numeric_features].fillna(df[self.numeric_features].median())
             self.scaler.fit(df_temp)
+        
+        # ── Fit encoder on categorical features ──────────────────
+        if self.categorical_features:
+            print(f"[Preprocessor.fit] Fitting OneHotEncoder on {len(self.categorical_features)} categorical features...")
+            self.encoder = OneHotEncoder(
+                drop='first',           # Drop first category to avoid multicollinearity
+                sparse_output=False,    # Return dense array
+                handle_unknown='ignore' # ← KEY: Ignore unseen categories in val/test
+            )
+            
+            # Fit on training data
+            self.encoder.fit(df[self.categorical_features].fillna('Unknown'))
+            print(f"[Preprocessor.fit]   → Will create {len(self.encoder.get_feature_names_out())} encoded features")
         
         self._is_fitted = True
         print("[Preprocessor.fit] Preprocessing transformers fitted successfully!")
@@ -247,7 +317,29 @@ class Preprocessor:
         # ── 5. Drop unwanted columns ──────────────────────────────
         df = self._drop_columns(df)
         
+        # ── 6. FINAL VALIDATION ───────────────────────────────────
+        # Ensure all columns are numeric (critical for sklearn)
+        non_numeric = df.select_dtypes(exclude=[np.number]).columns
+        if len(non_numeric) > 0:
+            print(f"\n[Preprocessor] WARNING: Found {len(non_numeric)} non-numeric columns:")
+            for col in non_numeric:
+                print(f"  → {col}: {df[col].dtype}")
+            
+            # Drop non-numeric columns (except target)
+            cols_to_drop = [c for c in non_numeric if c not in [TARGET_COLUMN, TARGET_LOG]]
+            if cols_to_drop:
+                df = df.drop(columns=cols_to_drop)
+                print(f"[Preprocessor] Dropped {len(cols_to_drop)} non-numeric columns")
+        
+        # Ensure no NaN
+        if df.isna().any().any():
+            nan_cols = df.columns[df.isna().any()].tolist()
+            print(f"\n[Preprocessor] WARNING: Found NaN in {len(nan_cols)} columns after preprocessing")
+            print(f"[Preprocessor] Filling NaN with 0...")
+            df = df.fillna(0)
+        
         print(f"[Preprocessor.transform] Transformation complete! Final shape: {df.shape}")
+        print(f"[Preprocessor.transform] All numeric: {len(df.select_dtypes(include=[np.number]).columns) == len(df.columns)}")
         
         return df
     
@@ -316,17 +408,33 @@ class Preprocessor:
         return df
     
     def _encode_categorical(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply one-hot encoding to categorical features."""
+        """Apply one-hot encoding to categorical features using fitted encoder."""
+        if not self.encoder or not self.categorical_features:
+            return df
+        
         print("[Preprocessor] Applying one-hot encoding...")
         
-        if self.categorical_features:
-            df = pd.get_dummies(
-                df,
-                columns=self.categorical_features,
-                drop_first=True,
-                dtype=int
-            )
-            print(f"[Preprocessor]   → Encoded {len(self.categorical_features)} categorical features")
+        # Transform categorical features
+        encoded_array = self.encoder.transform(df[self.categorical_features].fillna('Unknown'))
+        
+        # Get feature names
+        feature_names = self.encoder.get_feature_names_out(self.categorical_features)
+        
+        # Create DataFrame with encoded features
+        encoded_df = pd.DataFrame(
+            encoded_array,
+            columns=feature_names,
+            index=df.index
+        )
+        
+        # Drop original categorical columns and add encoded ones
+        df = df.drop(columns=self.categorical_features)
+        df = pd.concat([df, encoded_df], axis=1)
+        
+        # Sanitize column names for LightGBM compatibility
+        df = sanitize_column_names(df)
+        
+        print(f"[Preprocessor]   → Created {len(feature_names)} encoded features")
         
         return df
     
@@ -346,12 +454,28 @@ class Preprocessor:
         
         return df
     
-    def _drop_columns(self, df: pd.DataFrame) -> None:
-        """Drop unwanted columns."""
-        cols_to_drop = [col for col in DROP_COLUMNS if col in df.columns]
+    def _drop_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Drop unwanted columns including datetime and object types."""
+        cols_to_drop = []
+        
+        # 1. Drop specified columns from config
+        cols_to_drop.extend([col for col in DROP_COLUMNS if col in df.columns])
+        
+        # 2. Drop datetime columns
+        datetime_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
+        cols_to_drop.extend(datetime_cols)
+        
+        # 3. Drop remaining object/string columns (safety net)
+        object_cols = df.select_dtypes(include=['object', 'string']).columns.tolist()
+        # Keep target columns if present
+        object_cols = [c for c in object_cols if c not in [TARGET_COLUMN, TARGET_LOG]]
+        cols_to_drop.extend(object_cols)
+        
+        # Remove duplicates
+        cols_to_drop = list(set(cols_to_drop))
         
         if cols_to_drop:
-            df = df.drop(columns=cols_to_drop)
+            df = df.drop(columns=cols_to_drop, errors='ignore')
             print(f"[Preprocessor] Dropped {len(cols_to_drop)} unwanted columns")
         
         return df
