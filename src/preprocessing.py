@@ -9,9 +9,7 @@ import pandas as pd
 import numpy as np
 import re
 from pathlib import Path
-from typing import Dict, Tuple, Optional
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
+from typing import Dict
 from sklearn.model_selection import train_test_split
 
 # Import configuration
@@ -22,13 +20,16 @@ from .config import (
     TRAIN_SIZE,
     VAL_SIZE,
     TEST_SIZE,
-    DROP_COLUMNS,
+    DROP_FEATURES,
     EXTRACT_PATTERNS,
     GROUP_IMPUTE_FEATURES,
     PRICE_LOWER_BOUND,
     PRICE_UPPER_BOUND,
     MIN_YEAR,
-    DROP_MISSING_THRESHOLD
+    DROP_MISSING_THRESHOLD,
+    TARGET_ENCODE_FEATURES,
+    ONEHOT_FEATURES,
+    RARE_LABEL_THRESHOLD
 )
 
 
@@ -214,12 +215,20 @@ class Preprocessor:
     
     def __init__(self):
         """Initialize preprocessor with empty state."""
-        self.scaler: Optional[StandardScaler] = None
-        self.encoder: Optional[OneHotEncoder] = None  
         self.group_medians: Dict[str, pd.Series] = {}
         self.numeric_features: list = []
         self.categorical_features: list = []
         self._is_fitted = False
+        self.known_categories: Dict[str, set] = {}   # col -> set of categories seen in training
+
+
+        # Target encoding state
+        self.target_encode_maps: Dict[str, pd.Series] = {}
+        self.global_target_mean: float = 0.0
+
+        # One-hot encoding state (rare label + dummies)
+        self.rare_categories_map: Dict[str, set] = {}  # col -> set of rare categories
+        self.onehot_columns: list = []  # columns after get_dummies (for alignment)
     
     def fit(self, df: pd.DataFrame) -> 'Preprocessor':
         """
@@ -234,6 +243,9 @@ class Preprocessor:
         print("\n[Preprocessor.fit] Fitting preprocessing transformers...")
         
         df = df.copy()
+
+        print(f"[DEBUG fit] TARGET_COLUMN ('{TARGET_COLUMN}') in df.columns? {TARGET_COLUMN in df.columns}")
+        print(f"[DEBUG fit] df.columns = {list(df.columns)}")
         
         # ── Identify feature types ────────────────────────────────
         self._identify_feature_types(df)
@@ -244,28 +256,43 @@ class Preprocessor:
             if feature in df.columns and 'Product Group' in df.columns:
                 self.group_medians[feature] = df.groupby('Product Group')[feature].median()
                 print(f"[Preprocessor.fit]   → {feature}: medians per Product Group calculated")
-        
-        # ── Fit scaler on numeric features ───────────────────────
-        if self.numeric_features:
-            print(f"[Preprocessor.fit] Fitting StandardScaler on {len(self.numeric_features)} numeric features...")
-            self.scaler = StandardScaler()
-            
-            # Temporarily fill NaN for fitting (will be properly imputed in transform)
-            df_temp = df[self.numeric_features].fillna(df[self.numeric_features].median())
-            self.scaler.fit(df_temp)
-        
-        # ── Fit encoder on categorical features ──────────────────
-        if self.categorical_features:
-            print(f"[Preprocessor.fit] Fitting OneHotEncoder on {len(self.categorical_features)} categorical features...")
-            self.encoder = OneHotEncoder(
-                drop='first',           # Drop first category to avoid multicollinearity
-                sparse_output=False,    # Return dense array
-                handle_unknown='ignore' # ← KEY: Ignore unseen categories in val/test
-            )
-            
-            # Fit on training data
-            self.encoder.fit(df[self.categorical_features].fillna('Unknown'))
-            print(f"[Preprocessor.fit]   → Will create {len(self.encoder.get_feature_names_out())} encoded features")
+
+        # ── Fit target encoding maps ──────────────────────────────
+        if TARGET_COLUMN in df.columns:
+            self.global_target_mean = df[TARGET_COLUMN].mean()
+            print(f"[Preprocessor.fit] Global target mean: ${self.global_target_mean:,.0f}")
+
+            te_features_present = [f for f in TARGET_ENCODE_FEATURES if f in df.columns]
+            if te_features_present:
+                print(f"[Preprocessor.fit] Calculating target encoding maps for {len(te_features_present)} features...")
+                for feature in te_features_present:
+                    self.target_encode_maps[feature] = df.groupby(feature)[TARGET_COLUMN].mean()
+                    print(f"[Preprocessor.fit]   → {feature}: {len(self.target_encode_maps[feature])} categories mapped")
+
+        # ── Fit rare categories map for one-hot encoding ──────────
+        ohe_features_present = [f for f in ONEHOT_FEATURES if f in df.columns]
+        if ohe_features_present:
+            for feature in ohe_features_present:
+                self.known_categories[feature] = set(df[feature].dropna().unique())  
+
+            print(f"[Preprocessor.fit] Calculating rare categories for {len(ohe_features_present)} OHE features (threshold={RARE_LABEL_THRESHOLD})...")
+            for feature in ohe_features_present:
+                value_counts = df[feature].value_counts()
+                rare_cats = set(value_counts[value_counts < RARE_LABEL_THRESHOLD].index)
+                self.rare_categories_map[feature] = rare_cats
+                if rare_cats:
+                    print(f"[Preprocessor.fit]   → {feature}: {len(rare_cats)} rare categories will become 'Other'")
+
+            # Apply rare label logic and compute dummy columns on train
+            df_ohe = df[ohe_features_present].copy()
+            for feature in ohe_features_present:
+                rare_cats = self.rare_categories_map.get(feature, set())
+                if rare_cats:
+                    df_ohe[feature] = df_ohe[feature].apply(lambda x: 'Other' if x in rare_cats else x)
+            df_ohe = df_ohe.fillna('Unknown')
+            dummies = pd.get_dummies(df_ohe, columns=ohe_features_present, drop_first=True)
+            self.onehot_columns = dummies.columns.tolist()
+            print(f"[Preprocessor.fit]   → Will create {len(self.onehot_columns)} one-hot encoded features")
         
         self._is_fitted = True
         print("[Preprocessor.fit] Preprocessing transformers fitted successfully!")
@@ -307,17 +334,14 @@ class Preprocessor:
         
         # ── 2. Imputation ─────────────────────────────────────────
         df = self._impute_missing(df)
-        
-        # ── 3. Encoding ───────────────────────────────────────────
-        df = self._encode_categorical(df)
-        
-        # ── 4. Scaling ────────────────────────────────────────────
-        df = self._scale_numeric(df)
-        
-        # ── 5. Drop unwanted columns ──────────────────────────────
+
+        # ── 3. Drop unwanted columns (BEFORE sanitize_column_names mutates names)
         df = self._drop_columns(df)
-        
-        # ── 6. FINAL VALIDATION ───────────────────────────────────
+
+        # ── 4. Encoding ───────────────────────────────────────────
+        df = self._encode_categorical(df)
+
+        # ── 5. FINAL VALIDATION ───────────────────────────────────
         # Ensure all columns are numeric (critical for sklearn)
         non_numeric = df.select_dtypes(exclude=[np.number]).columns
         if len(non_numeric) > 0:
@@ -359,7 +383,7 @@ class Preprocessor:
     
     def _identify_feature_types(self, df: pd.DataFrame) -> None:
         """Identify numeric and categorical features."""
-        exclude = [TARGET_COLUMN, TARGET_LOG, 'Sale_Date'] + DROP_COLUMNS
+        exclude = [TARGET_COLUMN, TARGET_LOG, 'Sale_Date'] + DROP_FEATURES
         
         self.numeric_features = [
             col for col in df.select_dtypes(include=[np.number]).columns
@@ -408,67 +432,92 @@ class Preprocessor:
         return df
     
     def _encode_categorical(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply one-hot encoding to categorical features using fitted encoder."""
-        if not self.encoder or not self.categorical_features:
-            return df
-        
-        print("[Preprocessor] Applying one-hot encoding...")
-        
-        # Transform categorical features
-        encoded_array = self.encoder.transform(df[self.categorical_features].fillna('Unknown'))
-        
-        # Get feature names
-        feature_names = self.encoder.get_feature_names_out(self.categorical_features)
-        
-        # Create DataFrame with encoded features
-        encoded_df = pd.DataFrame(
-            encoded_array,
-            columns=feature_names,
-            index=df.index
-        )
-        
-        # Drop original categorical columns and add encoded ones
-        df = df.drop(columns=self.categorical_features)
-        df = pd.concat([df, encoded_df], axis=1)
-        
-        # Sanitize column names for LightGBM compatibility
+        """
+        Apply categorical encoding in two steps:
+        1. Target encoding for high-cardinality features (TARGET_ENCODE_FEATURES)
+        2. Rare label grouping + one-hot encoding for low-cardinality features (ONEHOT_FEATURES)
+        """
+        print("[Preprocessor] Applying categorical encoding...")
+
+    # ── DEBUG: stampa lo stato interno ──
+        print(f"[DEBUG] self.target_encode_maps keys : {list(self.target_encode_maps.keys()) if self.target_encode_maps else 'VUOTO/None'}")
+        print(f"[DEBUG] self.onehot_columns count    : {len(self.onehot_columns) if self.onehot_columns else 'VUOTO/None'}")
+        print(f"[DEBUG] self.rare_categories_map keys: {list(self.rare_categories_map.keys()) if hasattr(self, 'rare_categories_map') and self.rare_categories_map else 'VUOTO/None'}")
+        # ── fine debug ──
+
+
+        # ── PART 1: Target Encoding ──────────────────────────────────
+        te_features_present = [f for f in TARGET_ENCODE_FEATURES if f in df.columns]
+        if te_features_present and self.target_encode_maps:
+            print(f"[Preprocessor]   Target encoding {len(te_features_present)} features...")
+            for feature in te_features_present:
+                if feature in self.target_encode_maps:
+                    encoding_map = self.target_encode_maps[feature]
+                    # Map known categories, fill unknown with global mean
+                    df[feature] = df[feature].map(encoding_map).fillna(self.global_target_mean)
+                    print(f"[Preprocessor]     → {feature}: target encoded")
+
+        # ── PART 2: Rare Label + One-Hot Encoding ────────────────────
+        ohe_features_present = [f for f in ONEHOT_FEATURES if f in df.columns]
+        if ohe_features_present and self.onehot_columns:
+            print(f"[Preprocessor]   One-hot encoding {len(ohe_features_present)} features with rare label grouping...")
+
+            # Apply rare label logic
+            df_ohe = df[ohe_features_present].copy()
+            for feature in ohe_features_present:
+                rare_cats = self.rare_categories_map.get(feature, set())
+                known_cats = self.known_categories.get(feature, set())   
+
+                df_ohe[feature] = df_ohe[feature].apply(
+                    lambda x: 'Other' if (x in rare_cats or x not in known_cats) else x  # ← modifica
+                )
+            df_ohe = df_ohe.fillna('Unknown')
+
+
+            if rare_cats:
+                    df_ohe[feature] = df_ohe[feature].apply(lambda x: 'Other' if x in rare_cats else x)
+            df_ohe = df_ohe.fillna('Unknown')
+
+            # Apply get_dummies
+            dummies = pd.get_dummies(df_ohe, columns=ohe_features_present, drop_first=True, dtype=int)
+
+            # Align columns with training set (add missing, drop extra)
+            for col in self.onehot_columns:
+                if col not in dummies.columns:
+                    dummies[col] = 0
+            dummies = dummies[self.onehot_columns]
+            dummies.index = df.index
+
+            # Drop original OHE columns and add dummies
+            df = df.drop(columns=ohe_features_present)
+            df = pd.concat([df, dummies], axis=1)
+            print(f"[Preprocessor]     → Created {len(self.onehot_columns)} one-hot features")
+
+        # ── Sanitize column names for LightGBM ───────────────────────
         df = sanitize_column_names(df)
-        
-        print(f"[Preprocessor]   → Created {len(feature_names)} encoded features")
-        
+
         return df
-    
-    def _scale_numeric(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply standard scaling to numeric features."""
-        if not self.scaler or not self.numeric_features:
-            return df
-        
-        print("[Preprocessor] Applying standard scaling...")
-        
-        # Only scale features that exist in current df
-        features_to_scale = [f for f in self.numeric_features if f in df.columns]
-        
-        if features_to_scale:
-            df[features_to_scale] = self.scaler.transform(df[features_to_scale])
-            print(f"[Preprocessor]   → Scaled {len(features_to_scale)} numeric features")
-        
-        return df
-    
+
     def _drop_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """Drop unwanted columns including datetime and object types."""
         cols_to_drop = []
         
         # 1. Drop specified columns from config
-        cols_to_drop.extend([col for col in DROP_COLUMNS if col in df.columns])
+        cols_to_drop.extend([col for col in DROP_FEATURES if col in df.columns])
         
         # 2. Drop datetime columns
         datetime_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
         cols_to_drop.extend(datetime_cols)
         
         # 3. Drop remaining object/string columns (safety net)
+        #    MA escludi quelle che devono ancora essere encodate
+        protected_cols = set(TARGET_ENCODE_FEATURES + ONEHOT_FEATURES)   # ← aggiunta
         object_cols = df.select_dtypes(include=['object', 'string']).columns.tolist()
-        # Keep target columns if present
-        object_cols = [c for c in object_cols if c not in [TARGET_COLUMN, TARGET_LOG]]
+        object_cols = [
+            c for c in object_cols
+            if c not in [TARGET_COLUMN, TARGET_LOG]
+            and c not in protected_cols                                   # ← aggiunta
+        ]
         cols_to_drop.extend(object_cols)
         
         # Remove duplicates
@@ -479,7 +528,6 @@ class Preprocessor:
             print(f"[Preprocessor] Dropped {len(cols_to_drop)} unwanted columns")
         
         return df
-
 
 # ============================================================================
 # COMPLETE PIPELINE

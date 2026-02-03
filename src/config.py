@@ -38,15 +38,38 @@ TEST_SIZE = 0.15
 # ============================================================================
 # FEATURE ENGINEERING
 # ============================================================================
-# Columns to drop (IDs and non-predictive metadata)
-DROP_COLUMNS = [
-    'Unnamed: 0', 
-    'Sales ID', 
-    'Machine ID', 
-    'Model ID', 
-    'Auctioneer ID', 
-    'datasource',
-    'Sales date'  # We extract features from this, then drop
+# Columns to drop (IDs, leakage, redundant, and low-signal features)
+DROP_FEATURES = [
+    # --- Leakage & Identifiers (no predictive value) ---
+    'Unnamed: 0',              # Index = proxy for date (leakage)
+    'Sales ID',                # Unique sale identifier
+    'Machine ID',              # Unique machine identifier
+    'Model ID',                # 1264+ unique values, no direct price signal
+    'datasource',              # Constant (1 unique value)
+    'Auctioneer ID',           # Constant in this subset
+    'Sales date',              # Already extracted to Sale_Year/Sale_Month
+    'Product Group Description',  # Redundant with Product Group (same info as text)
+
+    # --- >90% null, virtually no signal ---
+    'Extra features',
+    'Machine Width',
+    'Clean Room',
+    'Engine Horsepower',
+    'Push Block',
+    'Scarifier',
+    'Tip Control',
+
+    # --- >80% null AND zero feature importance ---
+    'Touchpad Type',
+    'Turbo Charged',
+    'Couple System',
+    'Grouser Tracks',
+    'Hydraulics Flow',
+    'Backhoe Mounting',
+    'Blade Type',
+    'Travel Possibilities',
+    'Differential Type',
+    'Steering Controls',
 ]
 
 # Features to extract from Product Class Description
@@ -77,25 +100,46 @@ MIN_YEAR = 1950  # Filter out data errors (years like 1000)
 # Missing value thresholds
 DROP_MISSING_THRESHOLD = 0.75  # Drop columns with >80% missing
 
+# Scaling (disabled: LightGBM is tree-based, doesn't benefit from scaling)
+APPLY_SCALING = False
+
 # ============================================================================
 # ENCODING STRATEGY
 # ============================================================================
-# Low cardinality features (<10 unique) → One-Hot Encoding
-ONEHOT_FEATURES = [
-    'Product Group',
-    'Enclosure',
-    'Hydraulics',
-    'Transmission',
-    'Drive_System'
-]
-
-# High cardinality features (>50 unique) → Target Encoding
+# High cardinality features → Target Encoding
 TARGET_ENCODE_FEATURES = [
     'Model Description',
     'Base Model',
+    'Secondary Description',
+    'Product Class Description',
     'State of Usage',
-    'Product Class Description'
+    'Hydraulics',
+    'Screen Size',
+    'Screen Size.1',
+    'Stick Length',
 ]
+
+# Low cardinality features → One-Hot Encoding
+ONEHOT_FEATURES = [
+    'Usage Band',
+    'Machine Size',
+    'Product Group',
+    'Driver System',
+    'Enclosure',
+    'Control',
+    'Control Type',
+    'Version',
+    'Transmission',
+    'Ripper',
+    'Coupler',
+    'Tupper Type',
+    'Thumb',
+    'Pattern Changer',
+    'Grouser Type',
+]
+
+# Threshold for rare label grouping (categories with < N occurrences → "Rare")
+RARE_LABEL_THRESHOLD = 10
 
 # ============================================================================
 # MODEL PARAMETERS
